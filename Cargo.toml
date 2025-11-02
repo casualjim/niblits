@@ -2,14 +2,13 @@
 name = "text-chunking"
 version = "0.1.0"
 edition = "2024"
-description = "Slipstream Text Chunking library text chunking"
+description = "Token-aware, multi-format text chunking library with language-aware semantic splitting"
 authors = ["Slipstream Team"]
 repository = "https://git.wagyu.icu/slipstream/text-chunking"
 homepage = "https://git.wagyu.icu/slipstream"
 publish = ["forgejo"]
-keywords = [
-]
-categories = ["development-tools::debugging", "network-programming", "web-programming"]
+keywords = ["text", "chunking", "parsing", "tokenization", "embeddings"]
+categories = ["text-processing", "parsing", "algorithms", "asynchronous"]
 readme = "README.md"
 license = "none"
 
