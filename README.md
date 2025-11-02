@@ -1,2 +1,1 @@
-# Slipstream PROJECT_NAME_TITLE
-
+# Slipstream Text Chunking
