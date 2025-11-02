@@ -12,7 +12,7 @@ jobs:
       - linux
       - amd64
     container:
-      image: casualjim/rust-builder:1.91-1
+      image: casualjim/rust-builder:1.91-2
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,17 +28,6 @@ jobs:
           experimental: true
           install: true
           cache: false
-
-      - name: Configure Cargo for Forgejo Registry
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: |-
-          mkdir -p ~/.cargo
-          cat > ~/.cargo/config.toml << 'EOF'
-          [registry]
-          global-credential-providers = ["cargo:token"]
-          [registries.forgejo]
-          index = "sparse+https://git.wagyu.icu/api/packages/pkg/cargo/"
-          EOF
 
       - name: Install npm dependencies
         run: bun install

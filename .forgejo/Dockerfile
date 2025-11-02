@@ -17,6 +17,7 @@ RUN apt-get update &&\
   protobuf-compiler \
   libssl-dev \
   tesseract-ocr \
+  unzip \
   mold \
   sccache &&\
   curl -sSL https://apt.llvm.org/llvm.sh | bash -s 20 &&\
@@ -93,3 +94,5 @@ ENV CARGO_HOME=/usr/local/cargo \
   RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 
 RUN curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash
+
+ADD cargo.toml /.cargo/config.toml
