@@ -1,5 +1,5 @@
 name: "Setup Build Environment"
-description: "Sets up the complete build environment for breeze-rustle"
+description: "Sets up the complete build environment for text-chunking"
 # Policy: This composite action is intentionally comprehensive and must not be split into
 # "lighter variants". All jobs should use this action as-is.
 inputs:
@@ -12,7 +12,6 @@ runs:
   using: "composite"
   steps:
     - name: Install mold linker and C++ libraries on Linux
-      if: runner.os == 'Linux'
       run: |
         # We need to ensure that all the C++ uses the same standard library
         # Install the same LLVM as the one used by the Zig toolchain
