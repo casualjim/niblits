@@ -32,10 +32,10 @@ jobs:
         run: |
           # We need to ensure that all the C++ uses the same standard library
           # Install the same LLVM as the one used by the Zig toolchain
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" | sudo tee /etc/apt/sources.list.d/llvm-20.list
-          sudo apt-get update
-          sudo apt-get install -y mold libssl-dev pkg-config libc++-20-dev libc++abi-20-dev clang-20
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key > /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" > /etc/apt/sources.list.d/llvm-20.list
+          apt-get update
+          apt-get install -y mold libssl-dev pkg-config libc++-20-dev libc++abi-20-dev clang-20
           ARCH=$(uname -m)
           echo "CXXFLAGS=-stdlib=libc++" >> $GITHUB_ENV
           echo "CC=clang-20" >> $GITHUB_ENV
@@ -48,7 +48,7 @@ jobs:
 
           if [ "$ARCH" = "aarch64" ]; then
             if [[ ! -e /usr/lib/aarch64-linux-gnu/libc++.so ]] || [[ -L /usr/lib/aarch64-linux-gnu/libc++.so && ! -e /usr/lib/aarch64-linux-gnu/libc++.so ]]; then
-              sudo ln -sf /usr/lib/aarch64-linux-gnu/libc++.so.1 /usr/lib/aarch64-linux-gnu/libc++.so
+              ln -sf /usr/lib/aarch64-linux-gnu/libc++.so.1 /usr/lib/aarch64-linux-gnu/libc++.so
             fi
 
             echo "Setting ARM64-specific environment variables"
