@@ -1,0 +1,173 @@
+name: Build Builder Image
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  schedule:
+    # Run every Monday at 5:00 AM UTC
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+jobs:
+  build-and-push-builder:
+    name: Build and Publish Builder Image
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: [docker, linux, amd64]
+            arch_suffix: amd64
+          - platform: linux/arm64
+            runner: [docker, linux, arm64]
+            arch_suffix: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: git.wagyu.icu
+          username: ${{ secrets.FORGEJO_REGISTRY_USERNAME }}
+          password: ${{ secrets.FORGEJO_REGISTRY_TOKEN }}
+
+      - name: Determine image metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          IMAGE_NAME="git.wagyu.icu/${{ github.repository }}/builder"
+
+          # Create timestamp-based tag
+          TIMESTAMP=$(date +%Y%m%d)
+
+          # Get git commit short hash
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            # Weekly builds get date tag
+            VERSION_TAG="weekly-${TIMESTAMP}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual builds get commit hash
+            VERSION_TAG="manual-${COMMIT_SHA}"
+          fi
+
+          echo "version_tag=$VERSION_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+
+          # Create architecture-specific tag
+          ARCH_TAG="${IMAGE_NAME}:${VERSION_TAG}-${{ matrix.arch_suffix }}"
+          echo "arch_tag=$ARCH_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .forgejo
+          file: .forgejo/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: ${{ steps.meta.outputs.arch_tag }}
+          labels: |
+            org.opencontainers.image.title=Builder Image
+            org.opencontainers.image.description= |
+              Multi-architecture builder image with Docker, Bun, and Playwright
+            org.opencontainers.image.version=${{ steps.meta.outputs.version_tag }}
+          cache-from: type=gha
+          cache-to: >
+            type=gha,mode=max
+
+  create-manifest:
+    name: Create and Push Multi-arch Manifest
+    runs-on:
+      - docker
+      - linux
+      - amd64
+    needs: build-and-push-builder
+    if: always() && needs.build-and-push-builder.result == 'success'
+    timeout-minutes: 10
+    steps:
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: git.wagyu.icu
+          username: ${{ secrets.FORGEJO_REGISTRY_USERNAME }}
+          password: ${{ secrets.FORGEJO_REGISTRY_TOKEN }}
+
+      - name: Determine image metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          IMAGE_NAME="git.wagyu.icu/${{ github.repository }}/builder"
+
+          # Create timestamp-based tag
+          TIMESTAMP=$(date +%Y%m%d)
+
+          # Get git commit short hash
+          COMMIT_SHA=$(git rev-parse --short HEAD)
+
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            VERSION_TAG="weekly-${TIMESTAMP}"
+            MAIN_TAG="${IMAGE_NAME}:latest-weekly"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION_TAG="manual-${COMMIT_SHA}"
+            MAIN_TAG=""
+          fi
+
+          echo "version_tag=$VERSION_TAG" >> "$GITHUB_OUTPUT"
+          echo "image_name=$IMAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "main_tag=$MAIN_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push multi-arch manifest
+        run: |
+          set -euo pipefail
+          IMAGE_NAME="${{ steps.meta.outputs.image_name }}"
+          VERSION_TAG="${{ steps.meta.outputs.version_tag }}"
+          MAIN_TAG="${{ steps.meta.outputs.main_tag }}"
+
+          # Create manifest for version tag combining both architectures
+          docker manifest create "${IMAGE_NAME}:${VERSION_TAG}" \
+            "${IMAGE_NAME}:${VERSION_TAG}-amd64" \
+            "${IMAGE_NAME}:${VERSION_TAG}-arm64"
+
+          # Annotate each architecture
+          docker manifest annotate "${IMAGE_NAME}:${VERSION_TAG}" \
+            "${IMAGE_NAME}:${VERSION_TAG}-amd64" --arch amd64
+          docker manifest annotate "${IMAGE_NAME}:${VERSION_TAG}" \
+            "${IMAGE_NAME}:${VERSION_TAG}-arm64" --arch arm64
+
+          # Push version manifest
+          docker manifest push "${IMAGE_NAME}:${VERSION_TAG}"
+
+          # Create and push latest-weekly manifest for scheduled builds
+          if [ -n "$MAIN_TAG" ]; then
+            docker manifest create "$MAIN_TAG" \
+              "${IMAGE_NAME}:${VERSION_TAG}-amd64" \
+              "${IMAGE_NAME}:${VERSION_TAG}-arm64"
+
+            docker manifest annotate "$MAIN_TAG" \
+              "${IMAGE_NAME}:${VERSION_TAG}-amd64" --arch amd64
+            docker manifest annotate "$MAIN_TAG" \
+              "${IMAGE_NAME}:${VERSION_TAG}-arm64" --arch arm64
+
+            docker manifest push "$MAIN_TAG"
+          fi
+
+      - name: Cleanup temporary images
+        run: |
+          set -euo pipefail
+          IMAGE_NAME="${{ steps.meta.outputs.image_name }}"
+          VERSION_TAG="${{ steps.meta.outputs.version_tag }}"
+
+          # Remove platform-specific images after manifest creation
+          docker rmi "${IMAGE_NAME}:${VERSION_TAG}-amd64" || true
+          docker rmi "${IMAGE_NAME}:${VERSION_TAG}-arm64" || true
+          docker rmi "${IMAGE_NAME}:${VERSION_TAG}" || true

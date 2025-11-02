@@ -11,6 +11,8 @@ jobs:
       - docker
       - linux
       - amd64
+    container:
+      image: casualjim/rust-builder:1.91-1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,47 +29,6 @@ jobs:
           [registries.forgejo]
           index = "sparse+https://git.wagyu.icu/api/packages/pkg/cargo/"
           EOF
-
-      - name: Install mold linker and C++ libraries on Linux
-        run: |
-          # We need to ensure that all the C++ uses the same standard library
-          # Install the same LLVM as the one used by the Zig toolchain
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key > /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-20 main" > /etc/apt/sources.list.d/llvm-20.list
-          apt-get update
-          apt-get install -y mold libssl-dev pkg-config libc++-20-dev libc++abi-20-dev clang-20
-          ARCH=$(uname -m)
-          echo "CXXFLAGS=-stdlib=libc++" >> $GITHUB_ENV
-          echo "CC=clang-20" >> $GITHUB_ENV
-          echo "CXX=clang++-20" >> $GITHUB_ENV
-          echo "CXXSTDLIB=c++" >> $GITHUB_ENV
-
-          # Configure Rust to use clang with mold for linking
-          RUSTFLAGS_VALUE="-C link-arg=-fuse-ld=mold"
-
-
-          if [ "$ARCH" = "aarch64" ]; then
-            if [[ ! -e /usr/lib/aarch64-linux-gnu/libc++.so ]] || [[ -L /usr/lib/aarch64-linux-gnu/libc++.so && ! -e /usr/lib/aarch64-linux-gnu/libc++.so ]]; then
-              ln -sf /usr/lib/aarch64-linux-gnu/libc++.so.1 /usr/lib/aarch64-linux-gnu/libc++.so
-            fi
-
-            echo "Setting ARM64-specific environment variables"
-            echo "CFLAGS=-I/usr/include -I/usr/include/aarch64-linux-gnu" >> $GITHUB_ENV
-            RUSTFLAGS_VALUE="$RUSTFLAGS_VALUE -L/usr/lib/aarch64-linux-gnu"
-          fi
-
-          if [ -n "${RUSTFLAGS:-}" ]; then
-            RUSTFLAGS_VALUE="${RUSTFLAGS} ${RUSTFLAGS_VALUE}"
-          fi
-
-          echo "RUSTFLAGS=$RUSTFLAGS_VALUE" >> $GITHUB_ENV
-        shell: bash
-
-      - name: Install tesseract OCR
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y tesseract-ocr
-        shell: bash
 
       - name: Install mise
         uses: https://github.com/jdx/mise-action@v3
