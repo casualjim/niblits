@@ -17,19 +17,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install mise
-        uses: https://github.com/jdx/mise-action@v3
-        env:
-          MISE_GITHUB_TOKEN: ${{ secrets.MISE_GITHUB_TOKEN }}
-        with:
-          experimental: true
-          install: true
-          cache: false
-
-      - name: Run tests
-        run: |
-          cargo nextest run --all-features --no-tests pass
-
       - name: Configure Cargo for Forgejo Registry
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
@@ -40,6 +27,22 @@ jobs:
           [registries.forgejo]
           index = "sparse+https://git.wagyu.icu/api/packages/pkg/cargo/"
           EOF
+
+      - name: Install mise
+        uses: https://github.com/jdx/mise-action@v3
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.MISE_GITHUB_TOKEN }}
+          CARGO_REGISTRIES_FORGEJO_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRIES_FORGEJO_TOKEN }}"
+        with:
+          experimental: true
+          install: true
+          cache: false
+
+      - name: Run tests
+        env:
+          CARGO_REGISTRIES_FORGEJO_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRIES_FORGEJO_TOKEN }}"
+        run: |
+          cargo nextest run --all-features --no-tests pass
 
       - name: Publish to Cargo Registry
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
