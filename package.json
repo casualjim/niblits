@@ -1,0 +1,14 @@
+{
+  "name": "text-chunking",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "^1.2.23",
+    "@kumos/tree-sitter-parsers": "^0.1.6"
+  },
+  "peerDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "trustedDependencies": [
+    "@kumos/tree-sitter-parsers"
+  ]
+}

@@ -7,3 +7,5 @@ experimental = true
 rust = { version = "latest", profile = "default", components = "llvm-tools,rust-analyzer" }
 "ubi:cargo-bins/cargo-binstall" = "latest"
 "cargo:cargo-release" = "latest"
+node = "22"
+bun = "latest"
