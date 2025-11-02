@@ -1,0 +1,51 @@
+name: CI Build and Publish
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-publish:
+    runs-on:
+      - docker
+      - linux
+      - amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install mise
+        uses: https://github.com/jdx/mise-action@v3
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.MISE_GITHUB_TOKEN }}
+        with:
+          experimental: true
+          install: true
+          cache: false
+
+      - name: Run tests
+        run: |
+          cargo nextest run --all-features --no-tests pass
+
+      - name: Configure Cargo for Forgejo Registry
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          mkdir -p ~/.cargo
+          cat > ~/.cargo/config.toml << 'EOF'
+          [registry]
+          global-credential-providers = ["cargo:token"]
+          [registries.forgejo]
+          index = "sparse+https://git.wagyu.icu/api/packages/pkg/cargo/"
+          EOF
+
+      - name: Publish to Cargo Registry
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          CARGO_REGISTRIES_FORGEJO_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRIES_FORGEJO_TOKEN }}"
+        run: |
+          git config --global user.email "mctest@wagyu.icu"
+          git config --global user.name "Bob the Builder"
+          cargo release patch --execute --no-confirm --all-features

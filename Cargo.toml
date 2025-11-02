@@ -1,0 +1,26 @@
+[package]
+name = "PROJECT_NAME_SNAKE"
+version = "0.1.0"
+edition = "2024"
+description = "Slipstream PROJECT_NAME_TITLE library for application initialization and observability"
+authors = ["Slipstream Team"]
+repository = "https://git.wagyu.icu/slipstream/PROJECT_NAME"
+homepage = "https://git.wagyu.icu/slipstream"
+publish = ["forgejo"]
+keywords = [
+]
+categories = ["development-tools::debugging", "network-programming", "web-programming"]
+readme = "README.md"
+license = "none"
+
+[package.metadata.release]
+sign-commit = false
+tag = false
+registry = "forgejo"
+# Add [ci skip] to commit messages to prevent CI triggers
+pre-release-commit-message = "Release {{version}} [ci skip]"
+
+[dependencies]
+eyre = "0.6"
+
+

@@ -1,0 +1,29 @@
+/target
+/node_modules
+
+/bun.lock
+/Cargo.lock
+.env
+.env.*
+!.env.example
+.mcp.json
+.mcp.json.bak
+mcp.json
+.claude/settings.local.json
+.*.vars
+*.log
+.crush
+crush.json
+CRUSH.md
+compose.override.yml
+QWEN.md
+qwen-*.sh
+warp-*.md
+
+# Functions use the .func directory for local runtime data which should
+# generally not be tracked in source control. To instruct the system to track
+# .func in source control, comment the following line (prefix it with '# ').
+/.func
+qwen.sh
+/memory.db
+.sctl.toml

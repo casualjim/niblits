@@ -1,0 +1,9 @@
+[settings]
+experimental = true
+
+[tools]
+"aqua:nextest-rs/nextest/cargo-nextest" = "latest"
+"cargo:cargo-sort" = "latest"
+rust = { version = "latest", profile = "default", components = "llvm-tools,rust-analyzer" }
+"ubi:cargo-bins/cargo-binstall" = "latest"
+"cargo:cargo-release" = "latest"
