@@ -31,7 +31,7 @@ eyre = "0.6"
 futures = "0.3"
 htmd = "0.3.2"
 
-hyperpolyglot = { git = "https://github.com/monkslc/hyperpolyglot", branch = "master" }
+hyperpolyglot = { version = "0.1.7", registry = "forgejo" }
 infer = "0.19.0"
 oxidize-pdf = { version = "1.6" }
 secrecy = { version = "0.10.3", features = ["serde"] }
