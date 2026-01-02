@@ -26,6 +26,8 @@ pub enum Chunk {
   Text(SemanticChunk),
   EndOfFile {
     file_path: String,
+    content: Option<String>,
+    content_hash: Option<[u8; 32]>,
     expected_chunks: usize, // Number of content chunks for this file
   },
   Delete {

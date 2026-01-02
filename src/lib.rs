@@ -5,6 +5,7 @@ pub mod languages;
 mod types;
 
 mod grammars;
+mod walker;
 
 use std::path::Path;
 use std::pin::Pin;
@@ -20,6 +21,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 use crate::chunker::get_chunker;
 // Re-export main types
 pub use crate::types::{Chunk, ChunkError, FileMetadata, ProjectChunk, SemanticChunk};
+pub use crate::walker::{WalkOptions, walk_files, walk_project, walker_includes_path};
 
 /// Tokenizer type for chunk size calculation
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -259,6 +261,8 @@ where
           file_path: path_str.clone(),
           chunk: Chunk::EndOfFile {
               file_path: path_str,
+              content: None,
+              content_hash: None,
               expected_chunks: chunk_count,
           },
           file_size,
