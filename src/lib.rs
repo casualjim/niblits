@@ -23,7 +23,10 @@ use crate::chunker::{get_chunker, get_chunker_with_overrides};
 pub use crate::types::{
   Chunk, ChunkError, CodeParseInfo, CodeParseObserver, FileMetadata, ProjectChunk, SemanticChunk,
 };
-pub use crate::walker::{WalkOptions, walk_files, walk_project, walker_includes_path};
+pub use crate::walker::{
+  WalkOptions, walk_files, walk_files_with_observer, walk_project, walk_project_with_observer,
+  walker_includes_path,
+};
 pub use chunker::ChunkerOverrides;
 
 /// Tokenizer type for chunk size calculation
