@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use thiserror::Error;
-use tree_sitter::Node;
+use tree_sitter::{Language, Node, Tree};
 
 #[derive(Error, Debug)]
 pub enum ChunkError {
@@ -57,6 +59,19 @@ impl SemanticChunk {
       end_byte,
     }
   }
+}
+
+#[derive(Debug, Clone)]
+pub struct CodeParseInfo {
+  pub file_path: String,
+  pub language_id: String,
+  pub language: Language,
+  pub tree: Arc<Tree>,
+  pub source: Arc<str>,
+}
+
+pub trait CodeParseObserver: Send + Sync {
+  fn on_parse(&self, info: CodeParseInfo) -> Result<(), ChunkError>;
 }
 
 /// A chunk from a project file with type information

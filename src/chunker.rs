@@ -1,4 +1,4 @@
-use std::{path::Path, pin::Pin};
+use std::{path::Path, pin::Pin, sync::Arc};
 
 mod code;
 mod docx;
@@ -90,6 +90,15 @@ pub trait Chunker: Send + Sync {
   async fn chunk(&self, path: &Path, reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream;
 }
 
+#[derive(Default)]
+pub struct ChunkerOverrides {
+  /// Replace the default code chunker in the chain.
+  pub code_chunker: Option<Box<dyn Chunker>>,
+  /// Observer invoked when the default code chunker parses a file.
+  /// Ignored when `code_chunker` is provided.
+  pub code_parse_observer: Option<Arc<dyn CodeParseObserver>>,
+}
+
 #[cfg(test)]
 pub fn memory_async_reader(bytes: Vec<u8>) -> Box<dyn AsyncRead + Unpin + Send> {
   Box::new(std::io::Cursor::new(bytes))
@@ -116,13 +125,17 @@ impl ChunkerChainNode {
   }
 }
 
-fn build_chunker_chain(config: &ChunkerConfig) -> Result<Box<ChunkerChainNode>, ChunkError> {
+fn compute_overlap(config: &ChunkerConfig) -> usize {
   let overlap = ((config.max_chunk_size as f32) * config.overlap_percentage).round() as usize;
-  let overlap = if config.max_chunk_size > 0 {
+  if config.max_chunk_size > 0 {
     overlap.min(config.max_chunk_size.saturating_sub(1))
   } else {
     overlap
-  };
+  }
+}
+
+fn build_chunker_chain(config: &ChunkerConfig) -> Result<Box<ChunkerChainNode>, ChunkError> {
+  let overlap = compute_overlap(config);
 
   let chain = Box::new(ChunkerChainNode::new(Box::new(TextChunker::new(
     config.max_chunk_size,
@@ -134,6 +147,53 @@ fn build_chunker_chain(config: &ChunkerConfig) -> Result<Box<ChunkerChainNode>, 
     config.tokenizer.clone(),
     overlap,
   )?));
+  let chain = chain.prepend(Box::new(MarkdownChunker::new(
+    config.max_chunk_size,
+    config.tokenizer.clone(),
+    overlap,
+  )?));
+  let chain = chain.prepend(Box::new(HtmlChunker::new(
+    config.max_chunk_size,
+    config.tokenizer.clone(),
+    overlap,
+  )?));
+  let chain = chain.prepend(Box::new(DocxChunker::new(
+    config.max_chunk_size,
+    config.tokenizer.clone(),
+    overlap,
+  )?));
+  let chain = chain.prepend(Box::new(PdfChunker::new(
+    config.max_chunk_size,
+    config.tokenizer.clone(),
+    overlap,
+  )?));
+
+  Ok(chain)
+}
+
+fn build_chunker_chain_with_overrides(
+  config: &ChunkerConfig,
+  overrides: ChunkerOverrides,
+) -> Result<Box<ChunkerChainNode>, ChunkError> {
+  let overlap = compute_overlap(config);
+  let code_chunker = match overrides.code_chunker {
+    Some(chunker) => chunker,
+    None => {
+      let chunker = CodeChunker::new(config.max_chunk_size, config.tokenizer.clone(), overlap)?;
+      let chunker = match overrides.code_parse_observer {
+        Some(observer) => chunker.with_parse_observer(observer),
+        None => chunker,
+      };
+      Box::new(chunker)
+    }
+  };
+
+  let chain = Box::new(ChunkerChainNode::new(Box::new(TextChunker::new(
+    config.max_chunk_size,
+    config.tokenizer.clone(),
+    overlap,
+  )?)));
+  let chain = chain.prepend(code_chunker);
   let chain = chain.prepend(Box::new(MarkdownChunker::new(
     config.max_chunk_size,
     config.tokenizer.clone(),
@@ -200,6 +260,26 @@ where
   let peekable: PeekableReader<Box<dyn AsyncRead + Unpin + Send>> =
     PeekableReader::new(Box::new(reader), 51200);
   let chain = build_chunker_chain(&config)?;
+  let (selected_chunker, peekable) = select_chunker(chain, &path, peekable).await?;
+  // Turn the peekable back into an AsyncRead that replays buffered bytes first
+  let combined = peekable.into_async_read();
+  Ok((selected_chunker, combined))
+}
+
+pub async fn get_chunker_with_overrides<P, R>(
+  path: P,
+  reader: R,
+  config: ChunkerConfig,
+  overrides: ChunkerOverrides,
+) -> Result<(Box<dyn Chunker>, impl AsyncRead + Unpin + Send + 'static), ChunkError>
+where
+  P: AsRef<Path>,
+  R: AsyncRead + Unpin + Send + 'static,
+{
+  let path = path.as_ref().to_owned();
+  let peekable: PeekableReader<Box<dyn AsyncRead + Unpin + Send>> =
+    PeekableReader::new(Box::new(reader), 51200);
+  let chain = build_chunker_chain_with_overrides(&config, overrides)?;
   let (selected_chunker, peekable) = select_chunker(chain, &path, peekable).await?;
   // Turn the peekable back into an AsyncRead that replays buffered bytes first
   let combined = peekable.into_async_read();

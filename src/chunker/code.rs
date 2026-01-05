@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use super::{ChunkStream, Chunker, ConcreteSizer};
 use crate::{
@@ -8,6 +8,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use text_splitter::{ChunkConfig, CodeSplitter};
+use tree_sitter::Parser;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 #[derive(Clone)]
@@ -15,6 +16,7 @@ pub struct CodeChunker {
   max_chunk_size: usize,
   chunk_overlap: usize,
   chunk_sizer: ConcreteSizer,
+  parse_observer: Option<Arc<dyn CodeParseObserver>>,
 }
 
 impl CodeChunker {
@@ -40,7 +42,13 @@ impl CodeChunker {
       max_chunk_size,
       chunk_overlap,
       chunk_sizer,
+      parse_observer: None,
     }
+  }
+
+  pub fn with_parse_observer(mut self, observer: Arc<dyn CodeParseObserver>) -> Self {
+    self.parse_observer = Some(observer);
+    self
   }
 }
 
@@ -93,7 +101,25 @@ impl Chunker for CodeChunker {
             return;
         }
 
-        let content = String::from_utf8_lossy(&data).into_owned();
+        let content: Arc<str> = Arc::from(String::from_utf8_lossy(&data).into_owned());
+
+        if let Some(observer) = &chunker.parse_observer {
+            let mut parser = Parser::new();
+            parser
+                .set_language(&ts_language)
+                .map_err(|err| ChunkError::ParseError(format!("Failed to set parser language: {err}")))?;
+            let tree = parser
+                .parse(content.as_ref(), None)
+                .ok_or_else(|| ChunkError::ParseError("Failed to parse content".to_string()))?;
+            let parse_info = CodeParseInfo {
+                file_path: path.to_string_lossy().to_string(),
+                language_id: language_name.clone(),
+                language: ts_language.clone(),
+                tree: Arc::new(tree),
+                source: Arc::clone(&content),
+            };
+            observer.on_parse(parse_info)?;
+        }
 
         let config = ChunkConfig::new(chunker.max_chunk_size)
           .with_sizer(&chunker.chunk_sizer)
@@ -101,7 +127,7 @@ impl Chunker for CodeChunker {
         let splitter = CodeSplitter::new(ts_language, config)
           .map_err(|e| ChunkError::ParseError(format!("Failed to create splitter: {}", e)))?;
 
-        for (offset, chunk_text) in splitter.chunk_indices(&content) {
+        for (offset, chunk_text) in splitter.chunk_indices(content.as_ref()) {
             if chunk_text.trim().is_empty() {
                 continue;
             }
@@ -146,6 +172,7 @@ mod tests {
     types::{Chunk, ChunkError},
   };
   use futures::StreamExt;
+  use std::sync::{Arc, Mutex};
 
   #[tokio::test]
   async fn test_streaming_time_to_first_chunk_code() {
@@ -167,6 +194,39 @@ mod tests {
   async fn test_code_chunker_creation() {
     let chunker = CodeChunker::new(1000, Tokenizer::Characters, 0).unwrap();
     assert_eq!(chunker.max_chunk_size, 1000);
+  }
+
+  struct TestParseObserver {
+    seen: Arc<Mutex<Option<CodeParseInfo>>>,
+  }
+
+  impl CodeParseObserver for TestParseObserver {
+    fn on_parse(&self, info: CodeParseInfo) -> Result<(), ChunkError> {
+      let mut guard = self.seen.lock().expect("observer lock poisoned");
+      *guard = Some(info);
+      Ok(())
+    }
+  }
+
+  #[tokio::test]
+  async fn test_code_chunker_parse_observer() {
+    let seen = Arc::new(Mutex::new(None));
+    let observer = Arc::new(TestParseObserver {
+      seen: Arc::clone(&seen),
+    });
+    let chunker =
+      CodeChunker::new(100, Tokenizer::Characters, 0).unwrap().with_parse_observer(observer);
+
+    let code = "fn main() {\n  println!(\"hi\");\n}\n";
+    let reader = memory_async_reader(code.as_bytes().to_vec());
+    let mut stream = chunker.chunk(Path::new("main.rs"), reader).await;
+
+    let _ = stream.next().await;
+
+    let info = seen.lock().expect("observer lock poisoned").clone();
+    let info = info.expect("observer should be called");
+    assert!(info.language_id.to_lowercase().contains("rust"));
+    assert!(info.source.contains("fn main"));
   }
 
   #[tokio::test]

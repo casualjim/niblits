@@ -18,10 +18,13 @@ use std::sync::{
 use futures::{Stream, StreamExt};
 use tokio::io::{AsyncRead, ReadBuf};
 
-use crate::chunker::get_chunker;
+use crate::chunker::{get_chunker, get_chunker_with_overrides};
 // Re-export main types
-pub use crate::types::{Chunk, ChunkError, FileMetadata, ProjectChunk, SemanticChunk};
+pub use crate::types::{
+  Chunk, ChunkError, CodeParseInfo, CodeParseObserver, FileMetadata, ProjectChunk, SemanticChunk,
+};
 pub use crate::walker::{WalkOptions, walk_files, walk_project, walker_includes_path};
+pub use chunker::ChunkerOverrides;
 
 /// Tokenizer type for chunk size calculation
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -237,6 +240,56 @@ where
       let path_str = path.to_string_lossy().to_string();
 
       let (selected_chunker, file_reader) = get_chunker(&path, reader, config).await?;
+      let (counting_reader, reader_stats) = CountingReader::new(file_reader);
+
+      let mut chunk_stream = selected_chunker.chunk(&path, Box::new(counting_reader)).await;
+      let mut chunk_count = 0usize;
+      while let Some(chunk_result) = chunk_stream.next().await {
+          let chunk = chunk_result?;
+          chunk_count += 1;
+          let file_size = reader_stats.bytes_read();
+          yield ProjectChunk {
+              file_path: path_str.clone(),
+              chunk,
+              file_size,
+          };
+      }
+
+      if chunk_count == 0 {
+          return;
+      }
+
+      let file_size = reader_stats.bytes_read();
+      yield ProjectChunk {
+          file_path: path_str.clone(),
+          chunk: Chunk::EndOfFile {
+              file_path: path_str,
+              content: None,
+              content_hash: None,
+              expected_chunks: chunk_count,
+          },
+          file_size,
+      };
+  }
+}
+
+/// Process a single file-like stream and yield chunks as a stream, with overrides.
+pub async fn chunk_stream_with_overrides<P, R>(
+  path: P,
+  reader: R,
+  config: ChunkerConfig,
+  overrides: ChunkerOverrides,
+) -> impl Stream<Item = Result<ProjectChunk, ChunkError>> + Send
+where
+  P: AsRef<Path>,
+  R: AsyncRead + Unpin + Send + 'static,
+{
+  let path = path.as_ref().to_owned();
+
+  async_stream::try_stream! {
+      let path_str = path.to_string_lossy().to_string();
+
+      let (selected_chunker, file_reader) = get_chunker_with_overrides(&path, reader, config, overrides).await?;
       let (counting_reader, reader_stats) = CountingReader::new(file_reader);
 
       let mut chunk_stream = selected_chunker.chunk(&path, Box::new(counting_reader)).await;
