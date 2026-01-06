@@ -14,24 +14,12 @@ pub struct TextChunker {
 }
 
 impl TextChunker {
-  pub fn new(
-    max_chunk_size: usize,
-    tokenizer_type: Tokenizer,
-    chunk_overlap: usize,
-  ) -> Result<Self, ChunkError> {
+  pub fn new(max_chunk_size: usize, tokenizer_type: Tokenizer, chunk_overlap: usize) -> Result<Self, ChunkError> {
     let chunk_sizer = tokenizer_type.try_into()?;
-    Ok(Self::new_with_sizer(
-      max_chunk_size,
-      chunk_overlap,
-      chunk_sizer,
-    ))
+    Ok(Self::new_with_sizer(max_chunk_size, chunk_overlap, chunk_sizer))
   }
 
-  pub fn new_with_sizer(
-    max_chunk_size: usize,
-    chunk_overlap: usize,
-    chunk_sizer: ConcreteSizer,
-  ) -> Self {
+  pub fn new_with_sizer(max_chunk_size: usize, chunk_overlap: usize, chunk_sizer: ConcreteSizer) -> Self {
     Self {
       max_chunk_size,
       chunk_overlap,
@@ -46,10 +34,7 @@ impl Chunker for TextChunker {
     &self,
     _file_path: &Path,
     mut reader: PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  ) -> Result<
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  > {
+  ) -> Result<PeekableReader<Box<dyn AsyncRead + Unpin + Send>>, PeekableReader<Box<dyn AsyncRead + Unpin + Send>>> {
     let peeked = reader.peek_content(8192).await;
     match peeked {
       Ok(content) => {
@@ -66,11 +51,7 @@ impl Chunker for TextChunker {
     }
   }
 
-  async fn chunk(
-    &self,
-    _file_path: &Path,
-    mut reader: Box<dyn AsyncRead + Unpin + Send>,
-  ) -> ChunkStream {
+  async fn chunk(&self, _file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
     Box::pin(async_stream::try_stream! {
         let mut data = Vec::new();
@@ -86,6 +67,7 @@ impl Chunker for TextChunker {
           .with_trim(false);
         let splitter = TextSplitter::new(config);
 
+        let line_index = LineIndex::new(&content);
         for (offset, chunk_text) in splitter.chunk_indices(&content) {
             if chunk_text.trim().is_empty() {
                 continue;
@@ -110,12 +92,17 @@ impl Chunker for TextChunker {
                 ConcreteSizer::Characters(_) => None,
             };
 
-            yield Chunk::Text(SemanticChunk {
-                text: overlapped_text.to_string(),
+            let (start_line, end_line) = line_index.line_numbers(start_offset, end_offset);
+            let semantic_chunk = SemanticChunk::with_line_numbers(
+                overlapped_text.to_string(),
                 tokens,
-                start_byte: start_offset,
-                end_byte: end_offset,
-            });
+                start_offset,
+                end_offset,
+                start_line,
+                end_line,
+            );
+
+            yield Chunk::Text(semantic_chunk);
         }
     })
   }
@@ -164,10 +151,7 @@ mod tests {
       chunks.push(result.expect("text chunking should succeed"));
     }
 
-    assert!(
-      chunks.len() >= 2,
-      "expected multiple chunks to test overlap"
-    );
+    assert!(chunks.len() >= 2, "expected multiple chunks to test overlap");
 
     let mut text_chunks = Vec::new();
     for c in &chunks {
@@ -182,12 +166,7 @@ mod tests {
       let (s1, e1, t1) = &window[0];
       let (s2, e2, t2) = &window[1];
 
-      assert!(
-        s2 < e1,
-        "next chunk should overlap previous: s2={}, e1={}",
-        s2,
-        e1
-      );
+      assert!(s2 < e1, "next chunk should overlap previous: s2={}, e1={}", s2, e1);
 
       let actual_overlap = e1 - s2;
       assert_eq!(

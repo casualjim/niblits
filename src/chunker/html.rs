@@ -12,24 +12,12 @@ pub struct HtmlChunker {
 }
 
 impl HtmlChunker {
-  pub fn new(
-    max_chunk_size: usize,
-    tokenizer_type: Tokenizer,
-    chunk_overlap: usize,
-  ) -> Result<Self, ChunkError> {
+  pub fn new(max_chunk_size: usize, tokenizer_type: Tokenizer, chunk_overlap: usize) -> Result<Self, ChunkError> {
     let chunk_sizer = tokenizer_type.try_into()?;
-    Ok(Self::new_with_sizer(
-      max_chunk_size,
-      chunk_overlap,
-      chunk_sizer,
-    ))
+    Ok(Self::new_with_sizer(max_chunk_size, chunk_overlap, chunk_sizer))
   }
 
-  pub fn new_with_sizer(
-    max_chunk_size: usize,
-    chunk_overlap: usize,
-    chunk_sizer: ConcreteSizer,
-  ) -> Self {
+  pub fn new_with_sizer(max_chunk_size: usize, chunk_overlap: usize, chunk_sizer: ConcreteSizer) -> Self {
     Self {
       markdown_chunker: MarkdownChunker::new_with_sizer(max_chunk_size, chunk_overlap, chunk_sizer),
     }
@@ -42,10 +30,7 @@ impl Chunker for HtmlChunker {
     &self,
     _file_path: &Path,
     mut reader: PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  ) -> Result<
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  > {
+  ) -> Result<PeekableReader<Box<dyn AsyncRead + Unpin + Send>>, PeekableReader<Box<dyn AsyncRead + Unpin + Send>>> {
     let matches_html = match reader.peek_content(8192).await {
       Ok(content) => infer::get(&content)
         .map(|file_type| file_type.mime_type() == "text/html")
@@ -53,18 +38,10 @@ impl Chunker for HtmlChunker {
       Err(_) => false,
     };
 
-    if matches_html {
-      Ok(reader)
-    } else {
-      Err(reader)
-    }
+    if matches_html { Ok(reader) } else { Err(reader) }
   }
 
-  async fn chunk(
-    &self,
-    _file_path: &Path,
-    mut reader: Box<dyn AsyncRead + Unpin + Send>,
-  ) -> ChunkStream {
+  async fn chunk(&self, _file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
     Box::pin(async_stream::try_stream! {
       let mut data = Vec::new();

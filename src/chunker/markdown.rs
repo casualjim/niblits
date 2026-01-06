@@ -18,24 +18,12 @@ pub struct MarkdownChunker {
 }
 
 impl MarkdownChunker {
-  pub fn new(
-    max_chunk_size: usize,
-    tokenizer_type: Tokenizer,
-    chunk_overlap: usize,
-  ) -> Result<Self, ChunkError> {
+  pub fn new(max_chunk_size: usize, tokenizer_type: Tokenizer, chunk_overlap: usize) -> Result<Self, ChunkError> {
     let chunk_sizer = tokenizer_type.try_into()?;
-    Ok(Self::new_with_sizer(
-      max_chunk_size,
-      chunk_overlap,
-      chunk_sizer,
-    ))
+    Ok(Self::new_with_sizer(max_chunk_size, chunk_overlap, chunk_sizer))
   }
 
-  pub fn new_with_sizer(
-    max_chunk_size: usize,
-    chunk_overlap: usize,
-    chunk_sizer: ConcreteSizer,
-  ) -> Self {
+  pub fn new_with_sizer(max_chunk_size: usize, chunk_overlap: usize, chunk_sizer: ConcreteSizer) -> Self {
     let normalized_overlap = chunk_overlap.min(max_chunk_size.saturating_sub(1));
     Self {
       max_chunk_size,
@@ -60,11 +48,9 @@ impl MarkdownChunker {
     })?;
 
     let splitter = MarkdownSplitter::new(config);
+    let line_index = LineIndex::new(content);
     let mut chunks = Vec::new();
-    for ChunkCharIndex {
-      chunk, byte_offset, ..
-    } in splitter.chunk_char_indices(content)
-    {
+    for ChunkCharIndex { chunk, byte_offset, .. } in splitter.chunk_char_indices(content) {
       if chunk.trim().is_empty() {
         continue;
       }
@@ -80,12 +66,15 @@ impl MarkdownChunker {
         ConcreteSizer::Characters(_) => None,
       };
 
-      chunks.push(SemanticChunk {
-        text: chunk.to_string(),
+      let (start_line, end_line) = line_index.line_numbers(start_byte, end_byte);
+      chunks.push(SemanticChunk::with_line_numbers(
+        chunk.to_string(),
         tokens,
         start_byte,
         end_byte,
-      });
+        start_line,
+        end_line,
+      ));
     }
 
     Ok(chunks)
@@ -102,10 +91,7 @@ impl Chunker for MarkdownChunker {
     &self,
     file_path: &Path,
     reader: PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  ) -> Result<
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  > {
+  ) -> Result<PeekableReader<Box<dyn AsyncRead + Unpin + Send>>, PeekableReader<Box<dyn AsyncRead + Unpin + Send>>> {
     match languages::detect(file_path, reader).await {
       Ok((detection, peekable)) => {
         let applies = detection.is_some_and(|d| is_markdown_language(d.language()));
@@ -115,11 +101,7 @@ impl Chunker for MarkdownChunker {
     }
   }
 
-  async fn chunk(
-    &self,
-    _file_path: &Path,
-    mut reader: Box<dyn AsyncRead + Unpin + Send>,
-  ) -> ChunkStream {
+  async fn chunk(&self, _file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
     Box::pin(async_stream::try_stream! {
       let mut data = Vec::new();
@@ -138,10 +120,7 @@ impl Chunker for MarkdownChunker {
 }
 
 fn is_markdown_language(language: &str) -> bool {
-  matches!(
-    language,
-    "Markdown" | "GitHub Flavored Markdown" | "RMarkdown" | "MDX"
-  ) || language.ends_with("Markdown")
+  matches!(language, "Markdown" | "GitHub Flavored Markdown" | "RMarkdown" | "MDX") || language.ends_with("Markdown")
 }
 
 #[cfg(test)]

@@ -24,17 +24,18 @@ pub use crate::types::{
   Chunk, ChunkError, CodeParseInfo, CodeParseObserver, FileMetadata, ProjectChunk, SemanticChunk,
 };
 pub use crate::walker::{
-  WalkOptions, walk_files, walk_files_with_observer, walk_project, walk_project_with_observer,
-  walker_includes_path,
+  WalkOptions, walk_files, walk_files_with_observer, walk_project, walk_project_with_observer, walker_includes_path,
 };
 pub use chunker::ChunkerOverrides;
 
 /// Tokenizer type for chunk size calculation
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Tokenizer {
   /// Simple character-based tokenization
   #[serde(rename = "characters")]
+  #[default]
   Characters,
   /// OpenAI tiktoken tokenizer with encoding name (e.g., "cl100k_base", "p50k_base")
   #[serde(rename = "tiktoken")]
@@ -77,8 +78,7 @@ impl Tokenizer {
             )));
           }
         };
-        let bpe =
-          bpe.map_err(|e| ChunkError::ParseError(format!("Failed to create tiktoken: {e}")))?;
+        let bpe = bpe.map_err(|e| ChunkError::ParseError(format!("Failed to create tiktoken: {e}")))?;
 
         Ok(Tokenizer::PreloadedTiktoken(Arc::new(bpe)))
       }
@@ -89,12 +89,6 @@ impl Tokenizer {
       }
       other => Ok(other),
     }
-  }
-}
-
-impl Default for Tokenizer {
-  fn default() -> Self {
-    Self::Characters
   }
 }
 
@@ -207,9 +201,7 @@ impl<R: AsyncRead + Send + Unpin> AsyncRead for CountingReader<R> {
     if let std::task::Poll::Ready(Ok(())) = &poll {
       let after = buf.filled().len();
       if after > before {
-        self
-          .bytes_read
-          .fetch_add((after - before) as u64, Ordering::Relaxed);
+        self.bytes_read.fetch_add((after - before) as u64, Ordering::Relaxed);
       }
     }
     poll
@@ -269,6 +261,7 @@ where
               file_path: path_str,
               content: None,
               content_hash: None,
+              file_metadata: None,
               expected_chunks: chunk_count,
           },
           file_size,
@@ -319,6 +312,7 @@ where
               file_path: path_str,
               content: None,
               content_hash: None,
+              file_metadata: None,
               expected_chunks: chunk_count,
           },
           file_size,

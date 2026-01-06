@@ -23,10 +23,7 @@ mod tests {
   #[test]
   fn test_load_grammars() {
     let languages = supported_languages();
-    assert!(
-      !languages.is_empty(),
-      "Should have loaded at least one grammar"
-    );
+    assert!(!languages.is_empty(), "Should have loaded at least one grammar");
 
     // Test Python
     if languages.contains(&"python") {
@@ -98,11 +95,7 @@ mod tests {
     // Test that all languages can be loaded
     for lang_name in all_languages {
       let language_fn = get_language_fn(lang_name);
-      assert!(
-        language_fn.is_some(),
-        "{} LanguageFn should be loaded",
-        lang_name
-      );
+      assert!(language_fn.is_some(), "{} LanguageFn should be loaded", lang_name);
     }
   }
 }

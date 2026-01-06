@@ -8,8 +8,8 @@ use crate::{
 };
 use async_trait::async_trait;
 use text_splitter::{ChunkConfig, CodeSplitter};
-use tree_sitter::Parser;
 use tokio::io::{AsyncRead, AsyncReadExt};
+use tree_sitter::Parser;
 
 #[derive(Clone)]
 pub struct CodeChunker {
@@ -20,24 +20,12 @@ pub struct CodeChunker {
 }
 
 impl CodeChunker {
-  pub fn new(
-    max_chunk_size: usize,
-    tokenizer_type: Tokenizer,
-    chunk_overlap: usize,
-  ) -> Result<Self, ChunkError> {
+  pub fn new(max_chunk_size: usize, tokenizer_type: Tokenizer, chunk_overlap: usize) -> Result<Self, ChunkError> {
     let chunk_sizer = tokenizer_type.try_into()?;
-    Ok(Self::new_with_sizer(
-      max_chunk_size,
-      chunk_overlap,
-      chunk_sizer,
-    ))
+    Ok(Self::new_with_sizer(max_chunk_size, chunk_overlap, chunk_sizer))
   }
 
-  pub fn new_with_sizer(
-    max_chunk_size: usize,
-    chunk_overlap: usize,
-    chunk_sizer: ConcreteSizer,
-  ) -> Self {
+  pub fn new_with_sizer(max_chunk_size: usize, chunk_overlap: usize, chunk_sizer: ConcreteSizer) -> Self {
     Self {
       max_chunk_size,
       chunk_overlap,
@@ -58,10 +46,7 @@ impl Chunker for CodeChunker {
     &self,
     file_path: &Path,
     reader: PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  ) -> Result<
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  > {
+  ) -> Result<PeekableReader<Box<dyn AsyncRead + Unpin + Send>>, PeekableReader<Box<dyn AsyncRead + Unpin + Send>>> {
     match languages::detect(file_path, reader).await {
       Ok((detection, peekable)) => {
         // Determine language from detection if supported
@@ -127,6 +112,7 @@ impl Chunker for CodeChunker {
         let splitter = CodeSplitter::new(ts_language, config)
           .map_err(|e| ChunkError::ParseError(format!("Failed to create splitter: {}", e)))?;
 
+        let line_index = LineIndex::new(content.as_ref());
         for (offset, chunk_text) in splitter.chunk_indices(content.as_ref()) {
             if chunk_text.trim().is_empty() {
                 continue;
@@ -152,12 +138,17 @@ impl Chunker for CodeChunker {
                 ConcreteSizer::Characters(_) => None,
             };
 
-            yield Chunk::Semantic(SemanticChunk {
-                text: overlapped_text.to_string(),
+            let (start_line, end_line) = line_index.line_numbers(start_offset, end_offset);
+            let semantic_chunk = SemanticChunk::with_line_numbers(
+                overlapped_text.to_string(),
                 tokens,
-                start_byte: start_offset,
-                end_byte: end_offset,
-            });
+                start_offset,
+                end_offset,
+                start_line,
+                end_line,
+            );
+
+            yield Chunk::Semantic(semantic_chunk);
         }
     })
   }
@@ -214,8 +205,9 @@ mod tests {
     let observer = Arc::new(TestParseObserver {
       seen: Arc::clone(&seen),
     });
-    let chunker =
-      CodeChunker::new(100, Tokenizer::Characters, 0).unwrap().with_parse_observer(observer);
+    let chunker = CodeChunker::new(100, Tokenizer::Characters, 0)
+      .unwrap()
+      .with_parse_observer(observer);
 
     let code = "fn main() {\n  println!(\"hi\");\n}\n";
     let reader = memory_async_reader(code.as_bytes().to_vec());
@@ -324,11 +316,7 @@ const user = await manager.getUser(123);
       })
       .collect();
 
-    assert!(
-      chunk_texts
-        .iter()
-        .any(|t| t.contains("async function fetchUserData"))
-    );
+    assert!(chunk_texts.iter().any(|t| t.contains("async function fetchUserData")));
     assert!(chunk_texts.iter().any(|t| t.contains("class UserManager")));
     assert!(chunk_texts.iter().any(|t| t.contains("this.cache.set")));
   }
@@ -388,11 +376,7 @@ where
       .collect();
 
     assert!(chunk_texts.iter().any(|t| t.contains("struct Cache")));
-    assert!(
-      chunk_texts
-        .iter()
-        .any(|t| t.contains("impl<K, V> Cache<K, V>"))
-    );
+    assert!(chunk_texts.iter().any(|t| t.contains("impl<K, V> Cache<K, V>")));
     assert!(chunk_texts.iter().any(|t| t.contains("pub fn insert")));
   }
 
@@ -488,11 +472,7 @@ def validate(item):
     }
 
     assert!(chunks.len() > 1);
-    assert!(
-      chunks
-        .iter()
-        .all(|chunk| matches!(chunk, Chunk::Semantic(_)))
-    );
+    assert!(chunks.iter().all(|chunk| matches!(chunk, Chunk::Semantic(_))));
   }
 
   #[tokio::test]
@@ -538,15 +518,14 @@ fn helper() {
       chunks.push(result.expect("Should chunk Python code"));
     }
 
-    assert!(
-      chunks
-        .iter()
-        .all(|chunk| matches!(chunk, Chunk::Semantic(_)))
-    );
+    assert!(chunks.iter().all(|chunk| matches!(chunk, Chunk::Semantic(_))));
     for chunk in chunks {
       if let Chunk::Semantic(sc) = chunk {
         assert!(sc.start_byte <= sc.end_byte);
         assert_eq!(sc.text.len(), sc.end_byte - sc.start_byte);
+        assert!(sc.start_line >= 1);
+        assert!(sc.end_line >= sc.start_line);
+        assert_eq!(sc.chunk_hash, *blake3::hash(sc.text.as_bytes()).as_bytes());
       }
     }
   }

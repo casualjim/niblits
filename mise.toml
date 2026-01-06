@@ -9,3 +9,4 @@ rust = { version = "latest", profile = "default", components = "llvm-tools,rust-
 "cargo:cargo-release" = "latest"
 node = "22"
 bun = "latest"
+pkl = "latest"

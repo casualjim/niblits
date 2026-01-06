@@ -33,6 +33,7 @@ htmd = "0.3.2"
 ignore = { version = "0.4", features = ["simd-accel"] }
 
 hyperpolyglot = { version = "0.1.7", registry = "forgejo" }
+icu_segmenter = "2.1.2"
 infer = "0.19.0"
 oxidize-pdf = { version = "1.6" }
 secrecy = { version = "0.10.3", features = ["serde"] }

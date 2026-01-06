@@ -17,24 +17,12 @@ pub struct PdfChunker {
 }
 
 impl PdfChunker {
-  pub fn new(
-    max_chunk_size: usize,
-    tokenizer_type: Tokenizer,
-    chunk_overlap: usize,
-  ) -> Result<Self, ChunkError> {
+  pub fn new(max_chunk_size: usize, tokenizer_type: Tokenizer, chunk_overlap: usize) -> Result<Self, ChunkError> {
     let chunk_sizer = tokenizer_type.try_into()?;
-    Ok(Self::new_with_sizer(
-      max_chunk_size,
-      chunk_overlap,
-      chunk_sizer,
-    ))
+    Ok(Self::new_with_sizer(max_chunk_size, chunk_overlap, chunk_sizer))
   }
 
-  pub fn new_with_sizer(
-    max_chunk_size: usize,
-    chunk_overlap: usize,
-    chunk_sizer: ConcreteSizer,
-  ) -> Self {
+  pub fn new_with_sizer(max_chunk_size: usize, chunk_overlap: usize, chunk_sizer: ConcreteSizer) -> Self {
     Self {
       max_chunk_size,
       chunk_overlap,
@@ -49,21 +37,14 @@ impl Chunker for PdfChunker {
     &self,
     _file_path: &Path,
     mut reader: PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  ) -> Result<
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  > {
+  ) -> Result<PeekableReader<Box<dyn AsyncRead + Unpin + Send>>, PeekableReader<Box<dyn AsyncRead + Unpin + Send>>> {
     match reader.peek_content(8192).await {
       Ok(content) if infer::archive::is_pdf(&content) => Ok(reader),
       _ => Err(reader),
     }
   }
 
-  async fn chunk(
-    &self,
-    _file_path: &Path,
-    mut reader: Box<dyn AsyncRead + Unpin + Send>,
-  ) -> ChunkStream {
+  async fn chunk(&self, _file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
     Box::pin(async_stream::try_stream! {
         let mut file = tempfile()?;
@@ -105,33 +86,42 @@ impl Chunker for PdfChunker {
           Ok::<_, ChunkError>(doc_chunks)
         }).await.map_err(|join_err| ChunkError::ParseError(format!("PDF extraction task failed: {join_err}")))??;
 
+        let mut line_cursor = 1usize;
         for doc_chunk in extraction {
           if doc_chunk.content.trim().is_empty() {
             continue;
           }
 
+          let content = doc_chunk.content;
           let tokens = match &chunker.chunk_sizer {
             ConcreteSizer::HuggingFace(tokenizer) => {
               tokenizer
-                .encode(doc_chunk.content.as_str(), false)
+                .encode(content.as_str(), false)
                 .map(|encoding| encoding.get_ids().to_vec())
                 .ok()
             }
             ConcreteSizer::Tiktoken(tiktoken) => {
-              tiktoken.encode_ordinary(&doc_chunk.content).into()
+              tiktoken.encode_ordinary(&content).into()
             }
             ConcreteSizer::Characters(_) => None,
           };
 
           let start_byte = doc_chunk.metadata.position.start_char;
           let end_byte = doc_chunk.metadata.position.end_char;
+          let start_line = line_cursor;
+          let end_line = start_line + count_line_breaks(&content);
+          line_cursor = end_line;
 
-          yield Chunk::Text(SemanticChunk {
-            text: doc_chunk.content,
+          let semantic_chunk = SemanticChunk::with_line_numbers(
+            content,
             tokens,
             start_byte,
             end_byte,
-          });
+            start_line,
+            end_line,
+          );
+
+          yield Chunk::Text(semantic_chunk);
         }
     })
   }
@@ -228,10 +218,7 @@ mod tests {
     };
 
     let mut stream = chunker
-      .chunk(
-        Path::new("fixture.pdf"),
-        Box::new(detected.into_async_read()),
-      )
+      .chunk(Path::new("fixture.pdf"), Box::new(detected.into_async_read()))
       .await;
 
     let mut chunks = Vec::new();
@@ -246,10 +233,6 @@ mod tests {
       let normalized = text.replace('\0', "");
       normalized.contains("Oxidize-PDF")
     });
-    assert!(
-      has_keyword,
-      "PDF chunks should mention Oxidize-PDF; got {:?}",
-      chunks
-    );
+    assert!(has_keyword, "PDF chunks should mention Oxidize-PDF; got {:?}", chunks);
   }
 }

@@ -273,10 +273,7 @@ where
     1 => Some(Detection::Heuristics(candidates[0])),
     _ => {
       // Multiple candidates after heuristics - use classifier
-      Some(Detection::Classifier(detectors::classify(
-        content,
-        &candidates,
-      )))
+      Some(Detection::Classifier(detectors::classify(content, &candidates)))
     }
   };
 
@@ -295,10 +292,7 @@ fn truncate_to_char_boundary(s: &str, mut max: usize) -> &str {
   }
 }
 
-fn filter_candidates(
-  previous_candidates: Vec<&'static str>,
-  new_candidates: Vec<&'static str>,
-) -> Vec<&'static str> {
+fn filter_candidates(previous_candidates: Vec<&'static str>, new_candidates: Vec<&'static str>) -> Vec<&'static str> {
   if previous_candidates.is_empty() {
     return new_candidates;
   }
@@ -342,11 +336,7 @@ mod tests {
   }
 
   impl<R: AsyncRead + Unpin> AsyncRead for CountingReader<R> {
-    fn poll_read(
-      mut self: Pin<&mut Self>,
-      cx: &mut Context<'_>,
-      buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
       let before = buf.filled().len();
       let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
       if let Poll::Ready(Ok(())) = &poll {
@@ -494,10 +484,7 @@ return "JavaScript";
     assert!(detection.is_some());
     let actual_language = match detection.unwrap() {
       Detection::Heuristics(lang) => lang,
-      other => panic!(
-        "Expected Classifier for .rs with minimal content, got {:?}",
-        other
-      ),
+      other => panic!("Expected Classifier for .rs with minimal content, got {:?}", other),
     };
 
     assert!(actual_language == "Rust");

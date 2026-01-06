@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use blake3::Hasher;
 use thiserror::Error;
 use tree_sitter::{Language, Node, Tree};
 
@@ -30,6 +31,7 @@ pub enum Chunk {
     file_path: String,
     content: Option<String>,
     content_hash: Option<[u8; 32]>,
+    file_metadata: Option<FileMetadata>,
     expected_chunks: usize, // Number of content chunks for this file
   },
   Delete {
@@ -41,8 +43,11 @@ pub enum Chunk {
 pub struct SemanticChunk {
   pub text: String,
   pub tokens: Option<Vec<u32>>, // Token IDs if pre-tokenized
+  pub chunk_hash: [u8; 32],
   pub start_byte: usize,
   pub end_byte: usize,
+  pub start_line: usize,
+  pub end_line: usize,
 }
 
 impl SemanticChunk {
@@ -52,13 +57,180 @@ impl SemanticChunk {
     let end_byte = node.end_byte();
     let text = source[start_byte..end_byte].to_string();
 
+    Self::new(text, None, start_byte, end_byte, source)
+  }
+
+  pub fn new(text: String, tokens: Option<Vec<u32>>, start_byte: usize, end_byte: usize, source: &str) -> Self {
+    let (start_line, end_line) = line_numbers_from_offsets(source, start_byte, end_byte);
+    Self::with_line_numbers(text, tokens, start_byte, end_byte, start_line, end_line)
+  }
+
+  pub fn with_line_numbers(
+    text: String,
+    tokens: Option<Vec<u32>>,
+    start_byte: usize,
+    end_byte: usize,
+    start_line: usize,
+    end_line: usize,
+  ) -> Self {
+    let chunk_hash = chunk_hash_for_text(&text);
     Self {
       text,
-      tokens: None,
+      tokens,
+      chunk_hash,
       start_byte,
       end_byte,
+      start_line,
+      end_line,
     }
   }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LineIndex {
+  line_starts: Vec<usize>,
+  text_len: usize,
+}
+
+impl LineIndex {
+  pub fn new(text: &str) -> Self {
+    let line_starts = collect_line_starts(text);
+    Self {
+      line_starts,
+      text_len: text.len(),
+    }
+  }
+
+  pub fn line_numbers(&self, start_byte: usize, end_byte: usize) -> (usize, usize) {
+    (self.line_number(start_byte), self.line_number(end_byte))
+  }
+
+  pub fn line_number(&self, byte_offset: usize) -> usize {
+    let offset = byte_offset.min(self.text_len);
+
+    self.line_starts.partition_point(|&start| start <= offset).max(1)
+  }
+
+  pub fn line_count(&self) -> usize {
+    if self.text_len == 0 { 0 } else { self.line_starts.len() }
+  }
+}
+
+fn chunk_hash_for_text(text: &str) -> [u8; 32] {
+  let mut hasher = Hasher::new();
+  hasher.update(text.as_bytes());
+  let hash = hasher.finalize();
+  let mut bytes = [0u8; 32];
+  bytes.copy_from_slice(hash.as_bytes());
+  bytes
+}
+
+pub(crate) fn count_line_breaks(text: &str) -> usize {
+  count_line_breaks_in_prefix(text, text.len())
+}
+
+fn line_numbers_from_offsets(source: &str, start_byte: usize, end_byte: usize) -> (usize, usize) {
+  let start = start_byte.min(source.len());
+  let end = end_byte.min(source.len());
+  let start_line = count_line_breaks_in_prefix(source, start) + 1;
+  let end_line = count_line_breaks_in_prefix(source, end) + 1;
+  (start_line, end_line)
+}
+
+fn collect_line_starts(text: &str) -> Vec<usize> {
+  let bytes = text.as_bytes();
+  let mut line_starts = Vec::new();
+  line_starts.push(0);
+  let mut index = 0;
+
+  while index < bytes.len() {
+    match bytes[index] {
+      b'\r' => {
+        if index + 1 < bytes.len() && bytes[index + 1] == b'\n' {
+          index += 2;
+        } else {
+          index += 1;
+        }
+        line_starts.push(index);
+      }
+      b'\n' | b'\x0B' | b'\x0C' => {
+        index += 1;
+        line_starts.push(index);
+      }
+      0xC2 => {
+        if index + 1 < bytes.len() && bytes[index + 1] == 0x85 {
+          index += 2;
+          line_starts.push(index);
+        } else {
+          index += 1;
+        }
+      }
+      0xE2 => {
+        if index + 2 < bytes.len() && bytes[index + 1] == 0x80 {
+          match bytes[index + 2] {
+            0xA8 | 0xA9 => {
+              index += 3;
+              line_starts.push(index);
+            }
+            _ => index += 1,
+          }
+        } else {
+          index += 1;
+        }
+      }
+      _ => index += 1,
+    }
+  }
+
+  line_starts
+}
+
+fn count_line_breaks_in_prefix(text: &str, limit: usize) -> usize {
+  let bytes = text.as_bytes();
+  let mut count = 0;
+  let mut index = 0;
+  let limit = limit.min(bytes.len());
+
+  while index < limit {
+    match bytes[index] {
+      b'\r' => {
+        count += 1;
+        if index + 1 < limit && bytes[index + 1] == b'\n' {
+          index += 2;
+        } else {
+          index += 1;
+        }
+      }
+      b'\n' | b'\x0B' | b'\x0C' => {
+        count += 1;
+        index += 1;
+      }
+      0xC2 => {
+        if index + 1 < limit && bytes[index + 1] == 0x85 {
+          count += 1;
+          index += 2;
+        } else {
+          index += 1;
+        }
+      }
+      0xE2 => {
+        if index + 2 < limit && bytes[index + 1] == 0x80 {
+          match bytes[index + 2] {
+            0xA8 | 0xA9 => {
+              count += 1;
+              index += 3;
+            }
+            _ => index += 1,
+          }
+        } else {
+          index += 1;
+        }
+      }
+      _ => index += 1,
+    }
+  }
+
+  count
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +306,9 @@ mod tests {
     assert_eq!(chunk.tokens, None); // SemanticChunk::from_node doesn't set tokens
     assert_eq!(chunk.start_byte, 0);
     assert_eq!(chunk.end_byte, source.len());
+    assert_eq!(chunk.start_line, 1);
+    assert_eq!(chunk.end_line, 3);
+    assert_eq!(chunk.chunk_hash, *blake3::hash(source.as_bytes()).as_bytes());
   }
 
   #[test]
@@ -142,10 +317,7 @@ mod tests {
     assert_eq!(err.to_string(), "Unsupported language: cobol");
 
     let err = ChunkError::ParseError("syntax error at line 5".to_string());
-    assert_eq!(
-      err.to_string(),
-      "Failed to parse content: syntax error at line 5"
-    );
+    assert_eq!(err.to_string(), "Failed to parse content: syntax error at line 5");
 
     let err = ChunkError::QueryError("invalid capture name".to_string());
     assert_eq!(err.to_string(), "Query error: invalid capture name");
@@ -153,12 +325,15 @@ mod tests {
 
   #[test]
   fn test_line_number_calculation() {
-    let source = "line1\nline2\nline3\nline4\nline5";
+    let source = "line1\r\nline2\nline3\rline4\u{2028}line5\u{2029}line6\u{000B}line7\u{000C}line8\u{0085}line9";
 
-    // Test various byte positions
-    assert_eq!(source[..0].matches('\n').count() + 1, 1); // Start of file
-    assert_eq!(source[..6].matches('\n').count() + 1, 2); // After first newline
-    assert_eq!(source[..12].matches('\n').count() + 1, 3); // After second newline
-    assert_eq!(source[..source.len()].matches('\n').count() + 1, 5); // End of file
+    assert_eq!(count_line_breaks(source), 8);
+    assert_eq!(line_numbers_from_offsets(source, 0, 0), (1, 1));
+    assert_eq!(line_numbers_from_offsets(source, 0, source.len()), (1, 9));
+
+    let line_index = LineIndex::new(source);
+    assert_eq!(line_index.line_count(), 9);
+    assert_eq!(line_index.line_numbers(0, 0), (1, 1));
+    assert_eq!(line_index.line_numbers(0, source.len()), (1, 9));
   }
 }

@@ -82,10 +82,7 @@ pub trait Chunker: Send + Sync {
     &self,
     path: &Path,
     reader: PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  ) -> Result<
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  >;
+  ) -> Result<PeekableReader<Box<dyn AsyncRead + Unpin + Send>>, PeekableReader<Box<dyn AsyncRead + Unpin + Send>>>;
 
   async fn chunk(&self, path: &Path, reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream;
 }
@@ -111,10 +108,7 @@ struct ChunkerChainNode {
 
 impl ChunkerChainNode {
   fn new(chunker: Box<dyn Chunker>) -> Self {
-    Self {
-      chunker,
-      next: None,
-    }
+    Self { chunker, next: None }
   }
 
   fn prepend(self: Box<Self>, chunker: Box<dyn Chunker>) -> Box<Self> {
@@ -218,17 +212,11 @@ fn build_chunker_chain_with_overrides(
   Ok(chain)
 }
 
-async fn select_chunker<'a>(
+async fn select_chunker(
   chain: Box<ChunkerChainNode>,
   path: &Path,
   mut peekable: PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-) -> Result<
-  (
-    Box<dyn Chunker>,
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  ),
-  ChunkError,
-> {
+) -> Result<(Box<dyn Chunker>, PeekableReader<Box<dyn AsyncRead + Unpin + Send>>), ChunkError> {
   let mut current = chain;
   loop {
     match current.chunker.applies(path, peekable).await {
@@ -238,9 +226,7 @@ async fn select_chunker<'a>(
         if let Some(next) = current.next {
           current = next;
         } else {
-          return Err(ChunkError::UnsupportedFileType(
-            path.to_string_lossy().to_string(),
-          ));
+          return Err(ChunkError::UnsupportedFileType(path.to_string_lossy().to_string()));
         }
       }
     }
@@ -257,8 +243,7 @@ where
   R: AsyncRead + Unpin + Send + 'static,
 {
   let path = path.as_ref().to_owned();
-  let peekable: PeekableReader<Box<dyn AsyncRead + Unpin + Send>> =
-    PeekableReader::new(Box::new(reader), 51200);
+  let peekable: PeekableReader<Box<dyn AsyncRead + Unpin + Send>> = PeekableReader::new(Box::new(reader), 51200);
   let chain = build_chunker_chain(&config)?;
   let (selected_chunker, peekable) = select_chunker(chain, &path, peekable).await?;
   // Turn the peekable back into an AsyncRead that replays buffered bytes first
@@ -277,8 +262,7 @@ where
   R: AsyncRead + Unpin + Send + 'static,
 {
   let path = path.as_ref().to_owned();
-  let peekable: PeekableReader<Box<dyn AsyncRead + Unpin + Send>> =
-    PeekableReader::new(Box::new(reader), 51200);
+  let peekable: PeekableReader<Box<dyn AsyncRead + Unpin + Send>> = PeekableReader::new(Box::new(reader), 51200);
   let chain = build_chunker_chain_with_overrides(&config, overrides)?;
   let (selected_chunker, peekable) = select_chunker(chain, &path, peekable).await?;
   // Turn the peekable back into an AsyncRead that replays buffered bytes first

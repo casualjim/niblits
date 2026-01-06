@@ -15,24 +15,12 @@ pub struct DocxChunker {
 }
 
 impl DocxChunker {
-  pub fn new(
-    max_chunk_size: usize,
-    tokenizer_type: Tokenizer,
-    chunk_overlap: usize,
-  ) -> Result<Self, ChunkError> {
+  pub fn new(max_chunk_size: usize, tokenizer_type: Tokenizer, chunk_overlap: usize) -> Result<Self, ChunkError> {
     let chunk_sizer = tokenizer_type.try_into()?;
-    Ok(Self::new_with_sizer(
-      max_chunk_size,
-      chunk_overlap,
-      chunk_sizer,
-    ))
+    Ok(Self::new_with_sizer(max_chunk_size, chunk_overlap, chunk_sizer))
   }
 
-  pub fn new_with_sizer(
-    max_chunk_size: usize,
-    chunk_overlap: usize,
-    chunk_sizer: ConcreteSizer,
-  ) -> Self {
+  pub fn new_with_sizer(max_chunk_size: usize, chunk_overlap: usize, chunk_sizer: ConcreteSizer) -> Self {
     Self {
       markdown_chunker: MarkdownChunker::new_with_sizer(max_chunk_size, chunk_overlap, chunk_sizer),
     }
@@ -45,21 +33,14 @@ impl Chunker for DocxChunker {
     &self,
     _file_path: &Path,
     mut reader: PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  ) -> Result<
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-    PeekableReader<Box<dyn AsyncRead + Unpin + Send>>,
-  > {
+  ) -> Result<PeekableReader<Box<dyn AsyncRead + Unpin + Send>>, PeekableReader<Box<dyn AsyncRead + Unpin + Send>>> {
     match reader.peek_content(8192).await {
       Ok(content) if infer::is_document(&content) && infer::doc::is_docx(&content) => Ok(reader),
       _ => Err(reader),
     }
   }
 
-  async fn chunk(
-    &self,
-    _file_path: &Path,
-    mut reader: Box<dyn AsyncRead + Unpin + Send>,
-  ) -> ChunkStream {
+  async fn chunk(&self, _file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
     Box::pin(async_stream::try_stream! {
       let mut temp_file = NamedTempFile::new()
@@ -104,9 +85,7 @@ mod tests {
   use std::path::{Path, PathBuf};
 
   fn fixture_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-      .join("fixtures")
-      .join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(name)
   }
 
   #[tokio::test]
@@ -124,10 +103,7 @@ mod tests {
     };
 
     let mut stream = chunker
-      .chunk(
-        Path::new("fixture.docx"),
-        Box::new(detected.into_async_read()),
-      )
+      .chunk(Path::new("fixture.docx"), Box::new(detected.into_async_read()))
       .await;
 
     let mut chunks = Vec::new();

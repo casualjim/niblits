@@ -1,5 +1,6 @@
+use crate::types::LineIndex;
 use crate::{
-  Chunk, ChunkError, ChunkerConfig, ChunkerOverrides, CodeParseObserver, ProjectChunk, Tokenizer,
+  Chunk, ChunkError, ChunkerConfig, ChunkerOverrides, CodeParseObserver, FileMetadata, ProjectChunk, Tokenizer,
   chunk_stream, chunk_stream_with_overrides,
 };
 use blake3::Hasher;
@@ -8,8 +9,8 @@ use ignore::{DirEntry, WalkBuilder, overrides::OverrideBuilder};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -121,8 +122,7 @@ fn walk_project_inner(
 
     // Find deleted files by comparing existing_hashes with collected files
     if !options.existing_hashes.is_empty() {
-      let collected_paths: BTreeSet<PathBuf> =
-        file_entries.iter().map(|(path, _)| path.clone()).collect();
+      let collected_paths: BTreeSet<PathBuf> = file_entries.iter().map(|(path, _)| path.clone()).collect();
       let tx_clone = tx.clone();
       let existing_hashes = options.existing_hashes.clone();
       let cancel_clone = cancel_token.clone();
@@ -155,10 +155,7 @@ fn walk_project_inner(
         }
 
         if deleted_count > 0 {
-          info!(
-            "Detected {} deleted files to remove from index",
-            deleted_count
-          );
+          info!("Detected {} deleted files to remove from index", deleted_count);
         }
       });
     }
@@ -365,9 +362,7 @@ where
           let path_str = path.to_string_lossy().to_string();
           let delete_chunk = ProjectChunk {
             file_path: path_str.clone(),
-            chunk: Chunk::Delete {
-              file_path: path_str,
-            },
+            chunk: Chunk::Delete { file_path: path_str },
             file_size: 0, // File doesn't exist
           };
           if let Err(send_err) = tx.send(Ok(delete_chunk)).await {
@@ -465,6 +460,7 @@ async fn collect_files_with_sizes(
 }
 
 /// Process files using dual-pool work-stealing approach
+#[allow(clippy::too_many_arguments)]
 async fn process_with_dual_pools(
   file_entries: Vec<(PathBuf, u64)>,
   config: ChunkerConfig,
@@ -560,7 +556,7 @@ async fn process_with_dual_pools(
 
             processed += 1;
             let remaining_count = remaining.fetch_sub(1, Ordering::SeqCst) - 1;
-            if remaining_count % 100 == 0 && remaining_count > 0 {
+            if remaining_count.is_multiple_of(100) && remaining_count > 0 {
               debug!("Progress: {} files remaining", remaining_count);
             }
           }
@@ -642,7 +638,7 @@ async fn process_with_dual_pools(
 
             processed += 1;
             let remaining_count = remaining.fetch_sub(1, Ordering::SeqCst) - 1;
-            if remaining_count > 0 && (remaining_count % 100 == 0 || remaining_count < 10) {
+            if remaining_count > 0 && (remaining_count.is_multiple_of(100) || remaining_count < 10) {
               debug!("Progress: {} files remaining", remaining_count);
             }
           }
@@ -692,11 +688,12 @@ fn process_file<P: AsRef<Path>>(
       let path_str = path.to_string_lossy().to_string();
 
       // First check if it's a text file using infer (this only reads a few bytes)
+      let detection = hyperpolyglot::detect(&path).ok().flatten();
       let is_text_file = if let Ok(Some(file_type)) = infer::get_from_path(&path) {
           file_type.matcher_type() == infer::MatcherType::Text
       } else {
           // If infer can't determine, check with hyperpolyglot
-          hyperpolyglot::detect(&path).is_ok()
+          detection.is_some()
       };
 
       if !is_text_file {
@@ -736,6 +733,19 @@ fn process_file<P: AsRef<Path>>(
       let hash = hasher.finalize();
       let mut content_hash = [0u8; 32];
       content_hash.copy_from_slice(hash.as_bytes());
+      let content_hash_hex = hash.to_hex().to_string();
+
+      let modified = tokio::fs::metadata(&path).await?.modified()?;
+      let line_index = LineIndex::new(&content);
+      let line_count = line_index.line_count();
+      let file_metadata = FileMetadata {
+          primary_language: detection.as_ref().map(|detected| detected.language().to_string()),
+          size: file_size,
+          modified,
+          content_hash: content_hash_hex,
+          line_count,
+          is_binary: !is_text_file,
+      };
 
       // Check if file has changed
       if let Some(existing) = existing_hash
@@ -774,6 +784,7 @@ fn process_file<P: AsRef<Path>>(
                   file_path,
                   content: Some(content_for_eof.clone()),
                   content_hash: Some(content_hash),
+                  file_metadata: Some(file_metadata.clone()),
                   expected_chunks,
               };
           }
@@ -961,21 +972,13 @@ python -m pytest tests/
     .unwrap();
 
     // Create a binary file (should be skipped)
-    fs::write(
-      base_path.join("test.bin"),
-      [0u8, 1, 2, 3, 255, 254, 253, 252],
-    )
-    .unwrap();
+    fs::write(base_path.join("test.bin"), [0u8, 1, 2, 3, 255, 254, 253, 252]).unwrap();
 
     // Create .gitignore
     fs::write(base_path.join(".gitignore"), "target/\n*.log\n").unwrap();
 
     // Create a file in .git (should be ignored)
-    fs::write(
-      base_path.join(".git/config"),
-      "[core]\nrepositoryformatversion = 0\n",
-    )
-    .unwrap();
+    fs::write(base_path.join(".git/config"), "[core]\nrepositoryformatversion = 0\n").unwrap();
 
     // Create a requirements file
     fs::write(
@@ -1019,10 +1022,7 @@ python -m pytest tests/
 
     // Check we got chunks from different files
     let unique_files: std::collections::HashSet<_> = chunks.iter().map(|c| &c.file_path).collect();
-    assert!(
-      unique_files.len() > 1,
-      "Should have chunks from multiple files"
-    );
+    assert!(unique_files.len() > 1, "Should have chunks from multiple files");
 
     // Check we have both semantic and text chunks
     let has_semantic = chunks.iter().any(|c| c.is_semantic());
@@ -1119,10 +1119,7 @@ python -m pytest tests/
       .iter()
       .filter(|c| c.file_path.ends_with(".py") && c.is_semantic())
       .collect();
-    assert!(
-      !python_chunks.is_empty(),
-      "Should have Python semantic chunks"
-    );
+    assert!(!python_chunks.is_empty(), "Should have Python semantic chunks");
 
     // Check Markdown files (should be text chunks)
     let md_chunks: Vec<_> = chunks
@@ -1199,9 +1196,7 @@ python -m pytest tests/
     let temp_dir = TempDir::new().unwrap();
     let rust_file = temp_dir.path().join("test.rs");
 
-    fs::write(
-      &rust_file,
-      r#"
+    let content = r#"
 fn main() {
     println!("Test");
 }
@@ -1209,9 +1204,8 @@ fn main() {
 fn helper() {
     let x = 42;
 }
-"#,
-    )
-    .unwrap();
+"#;
+    fs::write(&rust_file, content).unwrap();
 
     let file_size = fs::metadata(&rust_file).unwrap().len();
     let mut stream = Box::pin(process_file(
@@ -1239,10 +1233,29 @@ fn helper() {
     assert!(semantic_chunks.iter().all(|c| c.is_semantic()));
 
     // Should have exactly one EOF chunk at the end
-    assert!(matches!(
-      chunks.last().unwrap().chunk,
-      Chunk::EndOfFile { .. }
-    ));
+    assert!(matches!(chunks.last().unwrap().chunk, Chunk::EndOfFile { .. }));
+
+    let eof_chunk = chunks
+      .iter()
+      .find(|c| matches!(c.chunk, Chunk::EndOfFile { .. }))
+      .expect("EOF chunk should be present");
+    if let Chunk::EndOfFile {
+      content_hash,
+      file_metadata,
+      ..
+    } = &eof_chunk.chunk
+    {
+      let content_hash = content_hash.expect("EOF content_hash should be set");
+      let metadata = file_metadata.as_ref().expect("file metadata should be set");
+      assert_eq!(
+        metadata.content_hash,
+        blake3::hash(content.as_bytes()).to_hex().to_string()
+      );
+      assert_eq!(metadata.size, file_size);
+      assert!(!metadata.is_binary);
+      assert!(metadata.line_count >= 1);
+      assert_eq!(content_hash, *blake3::hash(content.as_bytes()).as_bytes());
+    }
   }
 
   #[tokio::test]
@@ -1299,9 +1312,6 @@ fn main() {
       chunks.push(result.unwrap());
     }
 
-    assert!(
-      chunks.is_empty(),
-      "Should get no chunks when file is unchanged"
-    );
+    assert!(chunks.is_empty(), "Should get no chunks when file is unchanged");
   }
 }
