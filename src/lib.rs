@@ -108,14 +108,19 @@ impl FromStr for Tokenizer {
   type Err = String;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    match s.to_lowercase().as_str() {
+    let lower = s.to_lowercase();
+    match lower.as_str() {
       "characters" => Ok(Tokenizer::Characters),
-      _ if s.starts_with("tiktoken:") => {
-        let encoding = s["tiktoken:".len()..].to_string();
+      _ if lower.starts_with("tiktoken:") => {
+        let encoding = s["tiktoken:".len()..].to_string().to_lowercase();
         Ok(Tokenizer::Tiktoken(encoding))
       }
-      _ if s.starts_with("hf:") => {
+      _ if lower.starts_with("hf:") => {
         let model_id = s["hf:".len()..].to_string();
+        Ok(Tokenizer::HuggingFace(model_id))
+      }
+      _ if lower.starts_with("huggingface:") => {
+        let model_id = s["huggingface:".len()..].to_string();
         Ok(Tokenizer::HuggingFace(model_id))
       }
       _ => Err(format!("Unknown tokenizer type: {}", s)),
@@ -326,6 +331,7 @@ mod tests {
   use futures::StreamExt;
   use std::io::Cursor;
   use std::path::Path;
+  use std::str::FromStr;
 
   #[tokio::test]
   async fn test_process_file_semantic_rust() {
@@ -515,5 +521,65 @@ mod tests {
       count += 1;
     }
     assert_eq!(count, 0, "empty input should produce no chunks");
+  }
+
+  #[test]
+  fn test_tokenizer_from_str_case_insensitive_tiktoken_prefix() {
+    let parsed = Tokenizer::from_str("TIKTOKEN:cl100k_base");
+    assert!(
+      parsed.is_ok(),
+      "expected case-insensitive tiktoken prefix, got {:?}",
+      parsed
+    );
+  }
+
+  #[test]
+  fn test_tokenizer_from_str_accepts_huggingface_prefix() {
+    let parsed = Tokenizer::from_str("huggingface:bert-base-uncased");
+    assert!(
+      parsed.is_ok(),
+      "expected huggingface: prefix alias to be accepted, got {:?}",
+      parsed
+    );
+  }
+
+  #[tokio::test]
+  async fn test_negative_overlap_percentage_rejected() {
+    let content = "short content";
+    let path = Path::new("notes.txt");
+    let reader = Cursor::new(content.as_bytes().to_vec());
+    let cfg = ChunkerConfig {
+      max_chunk_size: 16,
+      tokenizer: Tokenizer::Characters,
+      overlap_percentage: -0.25,
+    };
+
+    let mut stream = Box::pin(chunk_stream(path, reader, cfg).await);
+    let first = stream.next().await.expect("stream should yield an item");
+    assert!(
+      first.is_err(),
+      "expected negative overlap to be rejected, got {:?}",
+      first
+    );
+  }
+
+  #[tokio::test]
+  async fn test_overlap_percentage_above_one_rejected() {
+    let content = "short content";
+    let path = Path::new("notes.txt");
+    let reader = Cursor::new(content.as_bytes().to_vec());
+    let cfg = ChunkerConfig {
+      max_chunk_size: 16,
+      tokenizer: Tokenizer::Characters,
+      overlap_percentage: 1.5,
+    };
+
+    let mut stream = Box::pin(chunk_stream(path, reader, cfg).await);
+    let first = stream.next().await.expect("stream should yield an item");
+    assert!(
+      first.is_err(),
+      "expected overlap > 1.0 to be rejected, got {:?}",
+      first
+    );
   }
 }

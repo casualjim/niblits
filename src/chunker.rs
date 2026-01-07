@@ -119,17 +119,24 @@ impl ChunkerChainNode {
   }
 }
 
-fn compute_overlap(config: &ChunkerConfig) -> usize {
+fn compute_overlap(config: &ChunkerConfig) -> Result<usize, ChunkError> {
+  if !(0.0..=1.0).contains(&config.overlap_percentage) {
+    return Err(ChunkError::ParseError(format!(
+      "Invalid overlap percentage: {}",
+      config.overlap_percentage
+    )));
+  }
+
   let overlap = ((config.max_chunk_size as f32) * config.overlap_percentage).round() as usize;
   if config.max_chunk_size > 0 {
-    overlap.min(config.max_chunk_size.saturating_sub(1))
+    Ok(overlap.min(config.max_chunk_size.saturating_sub(1)))
   } else {
-    overlap
+    Ok(overlap)
   }
 }
 
 fn build_chunker_chain(config: &ChunkerConfig) -> Result<Box<ChunkerChainNode>, ChunkError> {
-  let overlap = compute_overlap(config);
+  let overlap = compute_overlap(config)?;
 
   let chain = Box::new(ChunkerChainNode::new(Box::new(TextChunker::new(
     config.max_chunk_size,
@@ -169,7 +176,7 @@ fn build_chunker_chain_with_overrides(
   config: &ChunkerConfig,
   overrides: ChunkerOverrides,
 ) -> Result<Box<ChunkerChainNode>, ChunkError> {
-  let overlap = compute_overlap(config);
+  let overlap = compute_overlap(config)?;
   let code_chunker = match overrides.code_chunker {
     Some(chunker) => chunker,
     None => {

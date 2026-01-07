@@ -102,7 +102,12 @@ impl LineIndex {
   }
 
   pub fn line_numbers(&self, start_byte: usize, end_byte: usize) -> (usize, usize) {
-    (self.line_number(start_byte), self.line_number(end_byte))
+    if end_byte == start_byte {
+      (self.line_number(start_byte), self.line_number(start_byte))
+    } else {
+      let end = end_byte.saturating_sub(1);
+      (self.line_number(start_byte), self.line_number(end))
+    }
   }
 
   pub fn line_number(&self, byte_offset: usize) -> usize {
@@ -335,5 +340,18 @@ mod tests {
     assert_eq!(line_index.line_count(), 9);
     assert_eq!(line_index.line_numbers(0, 0), (1, 1));
     assert_eq!(line_index.line_numbers(0, source.len()), (1, 9));
+  }
+
+  #[test]
+  fn test_line_numbers_end_offset_at_newline() {
+    let source = "line1\nline2";
+    let line_index = LineIndex::new(source);
+    let end_of_first_line = "line1\n".len();
+
+    assert_eq!(
+      line_index.line_numbers(0, end_of_first_line),
+      (1, 1),
+      "end offset at newline should stay on first line"
+    );
   }
 }

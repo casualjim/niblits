@@ -6,6 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::grammar_loader;
 use hyperpolyglot::{Detection, detectors};
+use tree_sitter::Parser;
 use tree_sitter_language::LanguageFn;
 
 pub fn get_language(name: &str) -> Option<LanguageFn> {
@@ -170,27 +171,38 @@ impl<R: AsyncRead + Unpin> AsyncRead for CombinedReader<R> {
 /// Returns the AsyncRead that has been re-useable after detection.
 ///
 /// # Examples
-/// ```
+/// ```no_run
 /// use std::path::Path;
 /// use std::io::Cursor;
 /// use tokio::fs::File;
-/// use text_chunking::chunking::languages::{detect, PeekableReader};
+/// use text_chunking::languages::{detect, PeekableReader};
 ///
-/// # #[tokio::main]
-/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # tokio::runtime::Builder::new_current_thread()
+/// #   .enable_all()
+/// #   .build()
+/// #   .unwrap()
+/// #   .block_on(async {
 /// // From memory buffer
 /// let path = Path::new("script.py");
 /// let content = "#!/usr/bin/env python\nprint('Hello')";
 /// let cursor = Cursor::new(content);
 /// let peekable = PeekableReader::new(cursor, 51200);
-/// let (detection, _peekable) = detect(path, peekable).await?;
-/// ///
+/// let (_detection, _peekable) = match detect(path, peekable).await {
+///   Ok(result) => result,
+///   Err((err, _reader)) => panic!("detect failed: {err}"),
+/// };
+///
 /// // From file for larger files
-/// let file = File::open("large_file.txt").await?;
+/// let file = match File::open("large_file.txt").await {
+///   Ok(file) => file,
+///   Err(err) => panic!("open failed: {err}"),
+/// };
 /// let peekable = PeekableReader::new(file, 51200);
-/// let (detection, file_reader) = detect(path, peekable).await?;
-/// # Ok(())
-/// # }
+/// let (_detection, _file_reader) = match detect(path, peekable).await {
+///   Ok(result) => result,
+///   Err((err, _reader)) => panic!("detect failed: {err}"),
+/// };
+/// # });
 /// ```
 pub async fn detect<R>(
   path: &Path,
@@ -213,15 +225,10 @@ where
 
   let extension = filename.and_then(detectors::get_extension);
 
-  let candidates = extension
+  let extension_candidates = extension
     .map(detectors::get_languages_from_extension)
     .unwrap_or_else(Vec::new);
-
-  // If extension gives us exactly one candidate, return it immediately (this is critical!)
-  if candidates.len() == 1 {
-    return Ok((Some(Detection::Extension(candidates[0])), content_reader));
-  };
-  // This allows multiple candidates to be filtered by shebang/heuristics
+  let extension_candidate_count = extension_candidates.len();
 
   // Shebang detection (reads first line without consuming)
   let first_line_bytes = match content_reader.peek_first_line().await {
@@ -240,13 +247,6 @@ where
     Vec::new()
   };
 
-  let candidates = filter_candidates(candidates, shebang_languages);
-
-  // If shebang gives us a definitive answer, use it
-  if candidates.len() == 1 {
-    return Ok((Some(Detection::Shebang(candidates[0])), content_reader));
-  }
-
   // Heuristics + classification: read up to MAX_CONTENT_SIZE_BYTES
   let content_bytes = match content_reader.peek_content(MAX_CONTENT_SIZE_BYTES).await {
     Ok(content) => content,
@@ -257,20 +257,36 @@ where
   let content_owned = String::from_utf8_lossy(&content_bytes).into_owned();
   let content = truncate_to_char_boundary(&content_owned, MAX_CONTENT_SIZE_BYTES);
 
-  let candidates = if candidates.len() > 1 {
-    if let Some(ext) = extension {
-      let languages = detectors::get_languages_from_heuristics(ext, &candidates, content);
-      filter_candidates(candidates, languages)
-    } else {
-      candidates
-    }
+  let mut candidates = if !shebang_languages.is_empty() {
+    shebang_languages
   } else {
-    candidates
+    extension_candidates
   };
 
+  if candidates.len() > 1 {
+    if let Some(ext) = extension
+      && extension_candidate_count > 1
+    {
+      let languages = detectors::get_languages_from_heuristics(ext, &candidates, content);
+      candidates = filter_candidates(candidates, languages);
+    }
+  }
+
   let detection = match candidates.len() {
-    0 => None,
-    1 => Some(Detection::Heuristics(candidates[0])),
+    0 => {
+      if content.trim().is_empty() {
+        None
+      } else {
+        Some(Detection::Classifier(detectors::classify(content, &[])))
+      }
+    }
+    1 => {
+      if content.trim().is_empty() || candidate_matches_content(candidates[0], content) {
+        Some(Detection::Heuristics(candidates[0]))
+      } else {
+        Some(Detection::Classifier(detectors::classify(content, &[])))
+      }
+    }
     _ => {
       // Multiple candidates after heuristics - use classifier
       Some(Detection::Classifier(detectors::classify(content, &candidates)))
@@ -311,6 +327,25 @@ fn filter_candidates(previous_candidates: Vec<&'static str>, new_candidates: Vec
     0 => previous_candidates,
     _ => filtered_candidates,
   }
+}
+
+fn candidate_matches_content(candidate: &str, content: &str) -> bool {
+  let Some(language_fn) = get_language(candidate) else {
+    return true;
+  };
+
+  let ts_language: tree_sitter::Language = language_fn.into();
+  let mut parser = Parser::new();
+  if parser.set_language(&ts_language).is_err() {
+    return true;
+  }
+
+  let tree = match parser.parse(content, None) {
+    Some(tree) => tree,
+    None => return false,
+  };
+
+  !tree.root_node().has_error()
 }
 
 #[cfg(test)]
@@ -431,9 +466,8 @@ mod tests {
     let peekable = PeekableReader::new(cursor, 51200);
 
     let (detection, _) = detect(path, peekable).await.unwrap();
-    assert!(detection.is_some());
-    let detection = detection.unwrap();
-    assert!(matches!(detection, Detection::Shebang("Python")));
+    let detection = detection.expect("expected detection");
+    assert_eq!(detection.language(), "Python");
   }
 
   #[tokio::test]
@@ -499,5 +533,41 @@ return "JavaScript";
 
     let (detection, _) = detect(path, peekable).await.unwrap();
     assert!(detection.is_none());
+  }
+
+  #[tokio::test]
+  async fn test_detect_shebang_overrides_extension_conflict() {
+    let content = "#!/usr/bin/env bash\necho hi\n";
+    let path = Path::new("script.rs");
+    let cursor = Cursor::new(content);
+    let peekable = PeekableReader::new(cursor, 51200);
+
+    let (detection, _) = detect(path, peekable).await.unwrap();
+    let detection = detection.expect("expected detection");
+    let language = detection.language();
+    assert!(
+      language != "Rust" && language != "RenderScript",
+      "expected shebang to override extension, got {:?}",
+      detection
+    );
+  }
+
+  #[tokio::test]
+  async fn test_detect_content_overrides_single_candidate_extension() {
+    let js_content = r#"function hello() {
+  console.log("not python");
+}"#;
+    let path = Path::new("script.py");
+    let cursor = Cursor::new(js_content);
+    let peekable = PeekableReader::new(cursor, 51200);
+
+    let (detection, _) = detect(path, peekable).await.unwrap();
+    let detection = detection.expect("expected some detection");
+    assert_ne!(
+      detection.language(),
+      "Python",
+      "expected content to override extension, got {:?}",
+      detection
+    );
   }
 }

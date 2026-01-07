@@ -40,6 +40,22 @@ impl CodeChunker {
   }
 }
 
+fn overlap_start_offset(content: &str, offset: usize, overlap: usize) -> usize {
+  if overlap == 0 || offset == 0 {
+    return offset;
+  }
+
+  let mut indices = Vec::new();
+  for (index, _) in content[..offset].char_indices() {
+    indices.push(index);
+  }
+  if indices.len() <= overlap {
+    0
+  } else {
+    indices[indices.len() - overlap]
+  }
+}
+
 #[async_trait]
 impl Chunker for CodeChunker {
   async fn applies(
@@ -117,10 +133,7 @@ impl Chunker for CodeChunker {
             if chunk_text.trim().is_empty() {
                 continue;
             }
-            let mut start_offset = offset.saturating_sub(chunker.chunk_overlap);
-            while start_offset > 0 && !content.is_char_boundary(start_offset) {
-                start_offset -= 1;
-            }
+            let start_offset = overlap_start_offset(content.as_ref(), offset, chunker.chunk_overlap);
             let end_offset = offset + chunk_text.len();
 
 

@@ -332,6 +332,7 @@ where
   let max_file_size = options.max_file_size;
   let cancel_token = options.cancel_token.clone();
   let observer = observer.clone();
+  let existing_hashes = options.existing_hashes.clone();
 
   // Create a channel for streaming results
   let (tx, rx) = mpsc::channel::<Result<ProjectChunk, ChunkError>>(options.max_parallel * 2);
@@ -355,6 +356,17 @@ where
           if walker_includes_path(&project_root, &path, max_file_size) {
             let size = meta.len();
             file_entries.push((path, size));
+          } else if existing_hashes.contains_key(&path) {
+            let path_str = path.to_string_lossy().to_string();
+            let delete_chunk = ProjectChunk {
+              file_path: path_str.clone(),
+              chunk: Chunk::Delete { file_path: path_str },
+              file_size: 0,
+            };
+            if let Err(send_err) = tx.send(Ok(delete_chunk)).await {
+              debug!("Failed to send delete chunk: {}", send_err);
+              return;
+            }
           }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -687,22 +699,11 @@ fn process_file<P: AsRef<Path>>(
   async_stream::try_stream! {
       let path_str = path.to_string_lossy().to_string();
 
-      // First check if it's a text file using infer (this only reads a few bytes)
       let detection = hyperpolyglot::detect(&path).ok().flatten();
-      let is_text_file = if let Ok(Some(file_type)) = infer::get_from_path(&path) {
-          file_type.matcher_type() == infer::MatcherType::Text
-      } else {
-          // If infer can't determine, check with hyperpolyglot
-          detection.is_some()
-      };
 
-      if !is_text_file {
-          return; // Skip binary files
-      }
-
-      // Now we know it's a text file, read it once
-      let content = match tokio::fs::read_to_string(&path).await {
-          Ok(content) => content,
+      // Read file bytes once so we can support binary chunkers too.
+      let bytes = match tokio::fs::read(&path).await {
+          Ok(bytes) => bytes,
           Err(err) => {
               if err.kind() == std::io::ErrorKind::NotFound {
                   // File was deleted between collection and reading
@@ -723,21 +724,26 @@ fn process_file<P: AsRef<Path>>(
           }
       };
 
-      if content.is_empty() {
+      if bytes.is_empty() {
           return;
       }
 
+      let content = std::str::from_utf8(&bytes).ok().map(str::to_string);
+      let is_text_file = content.is_some();
+
       // Compute hash of the content
       let mut hasher = Hasher::new();
-      hasher.update(content.as_bytes());
+      hasher.update(&bytes);
       let hash = hasher.finalize();
       let mut content_hash = [0u8; 32];
       content_hash.copy_from_slice(hash.as_bytes());
       let content_hash_hex = hash.to_hex().to_string();
 
       let modified = tokio::fs::metadata(&path).await?.modified()?;
-      let line_index = LineIndex::new(&content);
-      let line_count = line_index.line_count();
+      let line_count = content
+          .as_ref()
+          .map(|text| LineIndex::new(text).line_count())
+          .unwrap_or(0);
       let file_metadata = FileMetadata {
           primary_language: detection.as_ref().map(|detected| detected.language().to_string()),
           size: file_size,
@@ -757,7 +763,7 @@ fn process_file<P: AsRef<Path>>(
       }
 
       let content_for_eof = content.clone();
-      let reader = std::io::Cursor::new(content.into_bytes());
+      let reader = std::io::Cursor::new(bytes);
       let mut stream: std::pin::Pin<
         Box<dyn Stream<Item = Result<ProjectChunk, ChunkError>> + Send>,
       > = if let Some(observer) = observer {
@@ -777,12 +783,31 @@ fn process_file<P: AsRef<Path>>(
         Box::pin(chunk_stream(&path, reader, config).await)
       };
 
-      while let Some(chunk_result) = stream.next().await {
-          let mut project_chunk = chunk_result?;
+          while let Some(chunk_result) = stream.next().await {
+              let mut project_chunk = match chunk_result {
+            Ok(chunk) => chunk,
+            Err(ChunkError::UnsupportedFileType(_)) => {
+              debug!("Skipping unsupported file type: {}", path.display());
+              if existing_hash.is_some() {
+                yield ProjectChunk {
+                  file_path: path_str.clone(),
+                  chunk: Chunk::Delete {
+                    file_path: path_str.clone(),
+                  },
+                  file_size,
+                };
+              }
+              return;
+            }
+            Err(err) => {
+              Err(err)?;
+              unreachable!();
+            }
+          };
           if let Chunk::EndOfFile { file_path, expected_chunks, .. } = project_chunk.chunk {
               project_chunk.chunk = Chunk::EndOfFile {
                   file_path,
-                  content: Some(content_for_eof.clone()),
+                  content: content_for_eof.clone(),
                   content_hash: Some(content_hash),
                   file_metadata: Some(file_metadata.clone()),
                   expected_chunks,
@@ -1314,4 +1339,144 @@ fn main() {
 
     assert!(chunks.is_empty(), "Should get no chunks when file is unchanged");
   }
+
+  fn fixture_path(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(name)
+  }
+
+  #[tokio::test]
+  async fn test_walk_project_pdf_fixture() {
+    let temp_dir = TempDir::new().unwrap();
+    let source = fixture_path("unicode_professional_demo.pdf");
+    let dest = temp_dir.path().join("document.pdf");
+    fs::write(&dest, fs::read(source).unwrap()).unwrap();
+
+    let dest_str = dest.to_string_lossy().to_string();
+    let mut stream = walk_project(temp_dir.path(), WalkOptions::default());
+    let mut saw_chunk = false;
+    let mut saw_eof = false;
+
+    while let Some(chunk_result) = stream.next().await {
+      let project_chunk = chunk_result.unwrap();
+      if project_chunk.file_path != dest_str {
+        continue;
+      }
+
+      match project_chunk.chunk {
+        Chunk::EndOfFile { content, file_metadata, .. } => {
+          saw_eof = true;
+          assert!(content.is_none(), "expected no utf-8 content for pdf");
+          let metadata = file_metadata.expect("expected file metadata for pdf");
+          assert!(metadata.is_binary, "expected pdf metadata to be binary");
+        }
+        _ => {
+          saw_chunk = true;
+        }
+      }
+    }
+
+    assert!(saw_chunk, "expected pdf to produce at least one chunk");
+    assert!(saw_eof, "expected pdf to produce EOF chunk");
+  }
+
+  #[tokio::test]
+  async fn test_walk_project_docx_fixture() {
+    let temp_dir = TempDir::new().unwrap();
+    let source = fixture_path("word_default.docx");
+    let dest = temp_dir.path().join("document.docx");
+    fs::write(&dest, fs::read(source).unwrap()).unwrap();
+
+    let dest_str = dest.to_string_lossy().to_string();
+    let mut stream = walk_project(temp_dir.path(), WalkOptions::default());
+    let mut saw_chunk = false;
+    let mut saw_eof = false;
+
+    while let Some(chunk_result) = stream.next().await {
+      let project_chunk = chunk_result.unwrap();
+      if project_chunk.file_path != dest_str {
+        continue;
+      }
+
+      match project_chunk.chunk {
+        Chunk::EndOfFile { content, file_metadata, .. } => {
+          saw_eof = true;
+          assert!(content.is_none(), "expected no utf-8 content for docx");
+          let metadata = file_metadata.expect("expected file metadata for docx");
+          assert!(metadata.is_binary, "expected docx metadata to be binary");
+        }
+        _ => {
+          saw_chunk = true;
+        }
+      }
+    }
+
+    assert!(saw_chunk, "expected docx to produce at least one chunk");
+    assert!(saw_eof, "expected docx to produce EOF chunk");
+  }
+
+  #[tokio::test]
+  async fn test_walk_project_invalid_utf8_metadata_consistency() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("bad.txt");
+    fs::write(&file_path, b"hello\xFFworld").unwrap();
+
+    let file_path_str = file_path.to_string_lossy().to_string();
+    let mut stream = walk_project(temp_dir.path(), WalkOptions::default());
+    let mut saw_chunk = false;
+
+    while let Some(result) = stream.next().await {
+      let project_chunk = result.unwrap();
+      if project_chunk.file_path != file_path_str {
+        continue;
+      }
+
+      match project_chunk.chunk {
+        Chunk::Text(_) | Chunk::Semantic(_) | Chunk::EndOfFile { .. } => {
+          saw_chunk = true;
+        }
+        Chunk::Delete { .. } => {}
+      }
+    }
+
+    assert!(
+      !saw_chunk,
+      "expected invalid utf-8 file to be treated as binary and skipped"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_walk_files_unsupported_file_emits_delete() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("bad.bin");
+    fs::write(&file_path, b"\xFF\x00\x01").unwrap();
+
+    let mut existing_hashes = std::collections::BTreeMap::new();
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"old content");
+    let hash = hasher.finalize();
+    let mut hash_bytes = [0u8; 32];
+    hash_bytes.copy_from_slice(hash.as_bytes());
+    existing_hashes.insert(file_path.clone(), hash_bytes);
+
+    let files = tokio_stream::iter(vec![file_path.clone()]);
+    let mut options = WalkOptions::default();
+    options.existing_hashes = existing_hashes;
+
+    let mut stream = walk_files(files, temp_dir.path(), options);
+    let mut saw_delete = false;
+
+    while let Some(result) = stream.next().await {
+      let project_chunk = result.unwrap();
+      if project_chunk.file_path != file_path.to_string_lossy() {
+        continue;
+      }
+      if matches!(project_chunk.chunk, Chunk::Delete { .. }) {
+        saw_delete = true;
+        break;
+      }
+    }
+
+    assert!(saw_delete, "expected delete chunk for unsupported file");
+  }
+
 }
