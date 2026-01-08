@@ -2,6 +2,7 @@ mod chunker;
 mod grammar_loader;
 pub mod languages;
 
+mod metadata_extractor;
 mod types;
 
 mod grammars;
@@ -21,7 +22,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 use crate::chunker::{get_chunker, get_chunker_with_overrides};
 // Re-export main types
 pub use crate::types::{
-  Chunk, ChunkError, CodeParseInfo, CodeParseObserver, FileMetadata, ProjectChunk, SemanticChunk,
+  Chunk, ChunkError, ChunkMetadata, CodeParseInfo, CodeParseObserver, FileMetadata, ProjectChunk, SemanticChunk,
 };
 pub use crate::walker::{
   WalkOptions, walk_files, walk_files_with_observer, walk_project, walk_project_with_observer, walker_includes_path,

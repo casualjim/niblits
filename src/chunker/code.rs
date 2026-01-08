@@ -4,6 +4,7 @@ use super::{ChunkStream, Chunker, ConcreteSizer};
 use crate::{
   Tokenizer,
   languages::{self, *},
+  metadata_extractor::extract_metadata_from_tree,
   types::*,
 };
 use async_trait::async_trait;
@@ -104,19 +105,21 @@ impl Chunker for CodeChunker {
 
         let content: Arc<str> = Arc::from(String::from_utf8_lossy(&data).into_owned());
 
+        let mut parser = Parser::new();
+        parser
+            .set_language(&ts_language)
+            .map_err(|err| ChunkError::ParseError(format!("Failed to set parser language: {err}")))?;
+        let tree = parser
+            .parse(content.as_ref(), None)
+            .ok_or_else(|| ChunkError::ParseError("Failed to parse content".to_string()))?;
+        let tree = Arc::new(tree);
+
         if let Some(observer) = &chunker.parse_observer {
-            let mut parser = Parser::new();
-            parser
-                .set_language(&ts_language)
-                .map_err(|err| ChunkError::ParseError(format!("Failed to set parser language: {err}")))?;
-            let tree = parser
-                .parse(content.as_ref(), None)
-                .ok_or_else(|| ChunkError::ParseError("Failed to parse content".to_string()))?;
             let parse_info = CodeParseInfo {
                 file_path: path.to_string_lossy().to_string(),
                 language_id: language_name.clone(),
                 language: ts_language.clone(),
-                tree: Arc::new(tree),
+                tree: Arc::clone(&tree),
                 source: Arc::clone(&content),
             };
             observer.on_parse(parse_info)?;
@@ -129,13 +132,12 @@ impl Chunker for CodeChunker {
           .map_err(|e| ChunkError::ParseError(format!("Failed to create splitter: {}", e)))?;
 
         let line_index = LineIndex::new(content.as_ref());
-        for (offset, chunk_text) in splitter.chunk_indices(content.as_ref()) {
+        for (idx, (offset, chunk_text)) in splitter.chunk_indices(content.as_ref()).enumerate() {
             if chunk_text.trim().is_empty() {
                 continue;
             }
             let start_offset = overlap_start_offset(content.as_ref(), offset, chunker.chunk_overlap);
             let end_offset = offset + chunk_text.len();
-
 
             let overlapped_text = &content[start_offset..end_offset];
             let tokens = match &chunker.chunk_sizer {
@@ -152,14 +154,51 @@ impl Chunker for CodeChunker {
             };
 
             let (start_line, end_line) = line_index.line_numbers(start_offset, end_offset);
-            let semantic_chunk = SemanticChunk::with_line_numbers(
+            let metadata = match extract_metadata_from_tree(
+              tree.as_ref(),
+              content.as_ref(),
+              start_offset,
+              end_offset,
+              &language_name,
+            ) {
+              Ok(mut meta) => {
+                if meta.node_name.is_none() {
+                  meta.node_name = Some(format!("chunk_{}", idx + 1));
+                }
+                if meta.parent_context.is_none() {
+                  meta.parent_context = Some(path.to_string_lossy().to_string());
+                }
+                meta
+              }
+              Err(err) => {
+                tracing::warn!(
+                  "Failed to extract metadata for {}: {}",
+                  path.display(),
+                  err
+                );
+                ChunkMetadata {
+                  node_type: "code_chunk".to_string(),
+                  node_name: Some(format!("chunk_{}", idx + 1)),
+                  language: language_name.clone(),
+                  parent_context: Some(path.to_string_lossy().to_string()),
+                  scope_path: Vec::new(),
+                  definitions: Vec::new(),
+                  references: Vec::new(),
+                }
+              }
+            };
+
+            let semantic_chunk = SemanticChunk {
+              metadata,
+              ..SemanticChunk::with_line_numbers(
                 overlapped_text.to_string(),
                 tokens,
                 start_offset,
                 end_offset,
                 start_line,
                 end_line,
-            );
+              )
+            };
 
             yield Chunk::Semantic(semantic_chunk);
         }
@@ -277,6 +316,26 @@ class Calculator:
       }
       _ => panic!("Expected semantic chunk"),
     }
+
+    let mut definitions = Vec::new();
+    for chunk in &chunks {
+      if let Chunk::Semantic(sc) = chunk {
+        definitions.extend(sc.metadata.definitions.iter().cloned());
+      }
+    }
+
+    assert!(
+      definitions.iter().any(|name| name == "Calculator"),
+      "expected class definition in metadata"
+    );
+    assert!(
+      definitions.iter().any(|name| name == "add"),
+      "expected method definition in metadata"
+    );
+    assert!(
+      definitions.iter().any(|name| name == "subtract"),
+      "expected method definition in metadata"
+    );
   }
 
   #[tokio::test]

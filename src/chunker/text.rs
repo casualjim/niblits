@@ -95,7 +95,7 @@ impl Chunker for TextChunker {
 
         let line_index = LineIndex::new(&content);
         let mut prev_end_offset = None;
-        for (offset, chunk_text) in splitter.chunk_indices(&content) {
+        for (idx, (offset, chunk_text)) in splitter.chunk_indices(&content).enumerate() {
             if chunk_text.trim().is_empty() {
                 continue;
             }
@@ -131,14 +131,26 @@ impl Chunker for TextChunker {
             };
 
             let (start_line, end_line) = line_index.line_numbers(start_offset, end_offset);
-            let semantic_chunk = SemanticChunk::with_line_numbers(
+            let metadata = ChunkMetadata {
+              node_type: "text_chunk".to_string(),
+              node_name: Some(format!("text_chunk_{}", idx + 1)),
+              language: "text".to_string(),
+              parent_context: Some(file_path.to_string_lossy().to_string()),
+              scope_path: Vec::new(),
+              definitions: Vec::new(),
+              references: Vec::new(),
+            };
+            let semantic_chunk = SemanticChunk {
+              metadata,
+              ..SemanticChunk::with_line_numbers(
                 overlapped_text.to_string(),
                 tokens,
                 start_offset,
                 end_offset,
                 start_line,
                 end_line,
-            );
+              )
+            };
 
             yield Chunk::Text(semantic_chunk);
         }
@@ -163,7 +175,10 @@ mod tests {
     let mut stream = chunker.chunk(Path::new("notes.txt"), reader).await;
 
     match stream.next().await {
-      Some(Ok(Chunk::Text(sc))) => assert!(!sc.text.is_empty()),
+      Some(Ok(Chunk::Text(sc))) => {
+        assert!(!sc.text.is_empty());
+        assert_eq!(sc.metadata.language, "text");
+      }
       other => panic!("Expected first text chunk, got {:?}", other),
     }
   }

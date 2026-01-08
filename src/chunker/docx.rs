@@ -40,8 +40,9 @@ impl Chunker for DocxChunker {
     }
   }
 
-  async fn chunk(&self, _file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
+  async fn chunk(&self, file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
+    let file_path = file_path.to_path_buf();
     Box::pin(async_stream::try_stream! {
       let mut temp_file = NamedTempFile::new()
         .map_err(|err| ChunkError::ParseError(format!("Failed to create temp file for DOCX parsing: {err}")))?;
@@ -69,7 +70,9 @@ impl Chunker for DocxChunker {
       .await
       .map_err(|err| ChunkError::ParseError(format!("DOCX parsing task failed: {err}")))??;
 
-      let chunks = chunker.markdown_chunker.chunk_markdown_string(markdown)?;
+      let chunks = chunker
+        .markdown_chunker
+        .chunk_markdown_string(markdown, Some(file_path.as_path()))?;
       for semantic_chunk in chunks {
         yield Chunk::Text(semantic_chunk);
       }

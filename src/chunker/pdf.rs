@@ -44,8 +44,9 @@ impl Chunker for PdfChunker {
     }
   }
 
-  async fn chunk(&self, _file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
+  async fn chunk(&self, file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
+    let file_path = file_path.to_path_buf();
     Box::pin(async_stream::try_stream! {
         let mut file = tempfile()?;
 
@@ -87,7 +88,7 @@ impl Chunker for PdfChunker {
         }).await.map_err(|join_err| ChunkError::ParseError(format!("PDF extraction task failed: {join_err}")))??;
 
         let mut line_cursor = 1usize;
-        for doc_chunk in extraction {
+        for (idx, doc_chunk) in extraction.into_iter().enumerate() {
           if doc_chunk.content.trim().is_empty() {
             continue;
           }
@@ -112,14 +113,26 @@ impl Chunker for PdfChunker {
           let end_line = start_line + count_line_breaks(&content);
           line_cursor = end_line;
 
-          let semantic_chunk = SemanticChunk::with_line_numbers(
-            content,
-            tokens,
-            start_byte,
-            end_byte,
-            start_line,
-            end_line,
-          );
+          let metadata = ChunkMetadata {
+            node_type: "text_chunk".to_string(),
+            node_name: Some(format!("pdf_chunk_{}", idx + 1)),
+            language: "pdf".to_string(),
+            parent_context: Some(file_path.to_string_lossy().to_string()),
+            scope_path: Vec::new(),
+            definitions: Vec::new(),
+            references: Vec::new(),
+          };
+          let semantic_chunk = SemanticChunk {
+            metadata,
+            ..SemanticChunk::with_line_numbers(
+              content,
+              tokens,
+              start_byte,
+              end_byte,
+              start_line,
+              end_line,
+            )
+          };
 
           yield Chunk::Text(semantic_chunk);
         }

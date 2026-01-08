@@ -39,6 +39,17 @@ pub enum Chunk {
   },
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ChunkMetadata {
+  pub node_type: String,
+  pub node_name: Option<String>,
+  pub language: String,
+  pub parent_context: Option<String>,
+  pub scope_path: Vec<String>,
+  pub definitions: Vec<String>,
+  pub references: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SemanticChunk {
   pub text: String,
@@ -48,6 +59,7 @@ pub struct SemanticChunk {
   pub end_byte: usize,
   pub start_line: usize,
   pub end_line: usize,
+  pub metadata: ChunkMetadata,
 }
 
 impl SemanticChunk {
@@ -82,6 +94,7 @@ impl SemanticChunk {
       end_byte,
       start_line,
       end_line,
+      metadata: ChunkMetadata::default(),
     }
   }
 }

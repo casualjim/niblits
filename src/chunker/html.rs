@@ -41,8 +41,9 @@ impl Chunker for HtmlChunker {
     if matches_html { Ok(reader) } else { Err(reader) }
   }
 
-  async fn chunk(&self, _file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
+  async fn chunk(&self, file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
+    let file_path = file_path.to_path_buf();
     Box::pin(async_stream::try_stream! {
       let mut data = Vec::new();
       reader.read_to_end(&mut data).await?;
@@ -55,7 +56,9 @@ impl Chunker for HtmlChunker {
         .convert(&html)
         .map_err(|err| ChunkError::ParseError(format!("Failed to convert HTML to Markdown: {err}")))?;
 
-      let chunks = chunker.markdown_chunker.chunk_markdown_string(markdown)?;
+      let chunks = chunker
+        .markdown_chunker
+        .chunk_markdown_string(markdown, Some(file_path.as_path()))?;
       for semantic_chunk in chunks {
         yield Chunk::Text(semantic_chunk);
       }

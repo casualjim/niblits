@@ -32,7 +32,11 @@ impl MarkdownChunker {
     }
   }
 
-  fn chunk_markdown_content(&self, content: &str) -> Result<Vec<SemanticChunk>, ChunkError> {
+  fn chunk_markdown_content(
+    &self,
+    content: &str,
+    file_path: Option<&Path>,
+  ) -> Result<Vec<SemanticChunk>, ChunkError> {
     if content.trim().is_empty() {
       return Ok(Vec::new());
     }
@@ -50,7 +54,7 @@ impl MarkdownChunker {
     let splitter = MarkdownSplitter::new(config);
     let line_index = LineIndex::new(content);
     let mut chunks = Vec::new();
-    for ChunkCharIndex { chunk, byte_offset, .. } in splitter.chunk_char_indices(content) {
+    for (idx, ChunkCharIndex { chunk, byte_offset, .. }) in splitter.chunk_char_indices(content).enumerate() {
       if chunk.trim().is_empty() {
         continue;
       }
@@ -67,21 +71,37 @@ impl MarkdownChunker {
       };
 
       let (start_line, end_line) = line_index.line_numbers(start_byte, end_byte);
-      chunks.push(SemanticChunk::with_line_numbers(
-        chunk.to_string(),
-        tokens,
-        start_byte,
-        end_byte,
-        start_line,
-        end_line,
-      ));
+      let metadata = ChunkMetadata {
+        node_type: "text_chunk".to_string(),
+        node_name: Some(format!("markdown_chunk_{}", idx + 1)),
+        language: "markdown".to_string(),
+        parent_context: file_path.map(|path| path.to_string_lossy().to_string()),
+        scope_path: Vec::new(),
+        definitions: Vec::new(),
+        references: Vec::new(),
+      };
+      chunks.push(SemanticChunk {
+        metadata,
+        ..SemanticChunk::with_line_numbers(
+          chunk.to_string(),
+          tokens,
+          start_byte,
+          end_byte,
+          start_line,
+          end_line,
+        )
+      });
     }
 
     Ok(chunks)
   }
 
-  pub fn chunk_markdown_string(&self, content: String) -> Result<Vec<SemanticChunk>, ChunkError> {
-    self.chunk_markdown_content(&content)
+  pub fn chunk_markdown_string(
+    &self,
+    content: String,
+    file_path: Option<&Path>,
+  ) -> Result<Vec<SemanticChunk>, ChunkError> {
+    self.chunk_markdown_content(&content, file_path)
   }
 }
 
@@ -101,8 +121,9 @@ impl Chunker for MarkdownChunker {
     }
   }
 
-  async fn chunk(&self, _file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
+  async fn chunk(&self, file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
+    let file_path = file_path.to_path_buf();
     Box::pin(async_stream::try_stream! {
       let mut data = Vec::new();
       reader.read_to_end(&mut data).await?;
@@ -111,7 +132,7 @@ impl Chunker for MarkdownChunker {
       }
 
       let content = String::from_utf8_lossy(&data).into_owned();
-      let chunks = chunker.chunk_markdown_string(content)?;
+      let chunks = chunker.chunk_markdown_string(content, Some(file_path.as_path()))?;
       for semantic_chunk in chunks {
         yield Chunk::Text(semantic_chunk);
       }
