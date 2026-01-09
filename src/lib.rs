@@ -25,7 +25,8 @@ pub use crate::types::{
   Chunk, ChunkError, ChunkMetadata, CodeParseInfo, CodeParseObserver, FileMetadata, ProjectChunk, SemanticChunk,
 };
 pub use crate::walker::{
-  WalkOptions, walk_files, walk_files_with_observer, walk_project, walk_project_with_observer, walker_includes_path,
+  EntryFilter, WalkOptions, is_ignored_path, is_included_path, process_supported_files, process_text_files_only,
+  walk_files, walk_files_with_observer, walk_project, walk_project_with_observer,
 };
 pub use chunker::ChunkerOverrides;
 

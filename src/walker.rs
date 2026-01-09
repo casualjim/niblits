@@ -11,10 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
+
+pub type EntryFilter = Arc<dyn Fn(&DirEntry) -> bool + Send + Sync + 'static>;
 
 /// Default ignore patterns embedded from extra-ignores file
 const DEFAULT_IGNORE_PATTERNS: &str = include_str!("../extra-ignores");
@@ -38,7 +40,7 @@ fn get_default_ignore_file() -> &'static PathBuf {
 }
 
 /// Options for walking a project directory
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WalkOptions {
   pub max_chunk_size: usize,
   pub tokenizer: Tokenizer,
@@ -48,6 +50,27 @@ pub struct WalkOptions {
   pub large_file_threads: usize,
   pub existing_hashes: std::collections::BTreeMap<PathBuf, [u8; 32]>,
   pub cancel_token: Option<CancellationToken>,
+  /// Application-specific ignore filename. Set to None to disable.
+  pub custom_ignore_filename: Option<String>,
+  /// Custom predicate for entry filtering. Overrides the default decision when provided.
+  pub entry_filter: Option<EntryFilter>,
+}
+
+impl std::fmt::Debug for WalkOptions {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("WalkOptions")
+      .field("max_chunk_size", &self.max_chunk_size)
+      .field("tokenizer", &self.tokenizer)
+      .field("overlap_percentage", &self.overlap_percentage)
+      .field("max_parallel", &self.max_parallel)
+      .field("max_file_size", &self.max_file_size)
+      .field("large_file_threads", &self.large_file_threads)
+      .field("existing_hashes", &self.existing_hashes)
+      .field("cancel_token", &self.cancel_token)
+      .field("custom_ignore_filename", &self.custom_ignore_filename)
+      .field("entry_filter", &self.entry_filter.as_ref().map(|_| "custom"))
+      .finish()
+  }
 }
 
 impl Default for WalkOptions {
@@ -62,6 +85,8 @@ impl Default for WalkOptions {
       large_file_threads: 4,
       existing_hashes: std::collections::BTreeMap::new(),
       cancel_token: None,
+      custom_ignore_filename: None,
+      entry_filter: None,
     }
   }
 }
@@ -98,7 +123,14 @@ fn walk_project_inner(
 
   tokio::spawn(async move {
     // Phase 1: Collect all files with their sizes
-    let file_entries = match collect_files_with_sizes(&path, max_file_size).await {
+    let file_entries = match collect_files_with_sizes(
+      &path,
+      max_file_size,
+      options.custom_ignore_filename.clone(),
+      options.entry_filter.clone(),
+    )
+    .await
+    {
       Ok(entries) => entries,
       Err(err) => {
         let _ = tx.send(Err(ChunkError::IoError(err))).await;
@@ -198,7 +230,14 @@ fn walk_project_inner(
 }
 
 /// Check if an entry should be traversed (for directories) or processed (for files)
-fn should_process_entry(entry: &DirEntry) -> bool {
+fn should_process_entry(entry: &DirEntry, entry_filter: Option<&EntryFilter>) -> bool {
+  if let Some(entry_filter) = entry_filter {
+    return entry_filter(entry);
+  }
+  process_supported_files(entry)
+}
+
+pub fn process_supported_files(entry: &DirEntry) -> bool {
   // Always traverse directories
   if entry.file_type().is_some_and(|ft| ft.is_dir()) {
     return true;
@@ -219,15 +258,22 @@ fn should_process_entry(entry: &DirEntry) -> bool {
     return false;
   }
 
-  // Skip binary files
-  let is_text_file = if let Ok(Some(file_type)) = infer::get_from_path(path) {
-    file_type.matcher_type() == infer::MatcherType::Text
-  } else {
-    // If infer can't determine, check with hyperpolyglot
-    hyperpolyglot::detect(path).is_ok()
-  };
+  // Allow text files and the binary formats we can process (PDF/DOCX).
+  if let Ok(Some(file_type)) = infer::get_from_path(path) {
+    if file_type.matcher_type() == infer::MatcherType::Text {
+      return true;
+    }
 
-  if !is_text_file {
+    let mime = file_type.mime_type();
+    if mime == "application/pdf" || mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+      return true;
+    }
+    debug!("Skipping binary file: {}", path.display());
+    return false;
+  }
+
+  // If infer can't determine, check with hyperpolyglot
+  if !hyperpolyglot::detect(path).is_ok() {
     debug!("Skipping binary file: {}", path.display());
     return false;
   }
@@ -235,12 +281,98 @@ fn should_process_entry(entry: &DirEntry) -> bool {
   true
 }
 
+pub fn process_text_files_only(entry: &DirEntry) -> bool {
+  // Always traverse directories
+  if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+    return true;
+  }
+
+  // For files, apply our filtering logic
+  if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+    return false;
+  }
+
+  let path = entry.path();
+
+  // Skip empty files
+  if let Ok(metadata) = entry.metadata()
+    && metadata.len() == 0
+  {
+    debug!("Skipping empty file: {}", path.display());
+    return false;
+  }
+
+  if !is_text_file(path) {
+    debug!("Skipping binary file: {}", path.display());
+    return false;
+  }
+
+  true
+}
+
+fn is_text_file(path: &Path) -> bool {
+  if let Ok(Some(file_type)) = infer::get_from_path(path) {
+    return file_type.matcher_type() == infer::MatcherType::Text;
+  }
+
+  // If infer can't determine, check with hyperpolyglot
+  hyperpolyglot::detect(path).is_ok()
+}
+
+fn configure_ignore_rules(builder: &mut WalkBuilder, max_file_size: Option<u64>, custom_ignore_filename: Option<&str>) {
+  // Add our default ignore patterns
+  let default_ignore = get_default_ignore_file();
+  if default_ignore.exists() {
+    builder.add_ignore(default_ignore);
+  }
+
+  builder.max_filesize(max_file_size);
+
+  if let Some(custom_ignore_filename) = custom_ignore_filename {
+    builder.add_custom_ignore_filename(custom_ignore_filename);
+  }
+}
+
 /// Decide if a single path would be included by the walker, using the same
 /// ignore/VCS pruning semantics. This is intended for file watcher events.
-pub fn walker_includes_path(
+pub fn is_included_path(project_root: impl AsRef<Path>, path: impl AsRef<Path>, max_file_size: Option<u64>) -> bool {
+  is_included_path_with_ignore_filename(project_root, path, max_file_size, None, None)
+}
+
+/// Decide if a single path would be included by the walker, using the same
+/// ignore/VCS pruning semantics and the provided walk options.
+fn is_included_path_with_options(
+  project_root: impl AsRef<Path>,
+  path: impl AsRef<Path>,
+  options: &WalkOptions,
+) -> bool {
+  is_included_path_with_ignore_filename(
+    project_root,
+    path,
+    options.max_file_size,
+    options.custom_ignore_filename.as_deref(),
+    options.entry_filter.as_ref(),
+  )
+}
+
+/// Decide if a single path would be ignored by the walker, using the same
+/// ignore/VCS pruning semantics and the provided walk options.
+pub fn is_ignored_path(project_root: impl AsRef<Path>, path: impl AsRef<Path>, options: &WalkOptions) -> bool {
+  !is_included_path_with_ignore_filename(
+    project_root,
+    path,
+    options.max_file_size,
+    options.custom_ignore_filename.as_deref(),
+    options.entry_filter.as_ref(),
+  )
+}
+
+fn is_included_path_with_ignore_filename(
   project_root: impl AsRef<Path>,
   path: impl AsRef<Path>,
   max_file_size: Option<u64>,
+  custom_ignore_filename: Option<&str>,
+  entry_filter: Option<&EntryFilter>,
 ) -> bool {
   let project_root = project_root.as_ref();
   let path = path.as_ref();
@@ -271,14 +403,8 @@ pub fn walker_includes_path(
   let mut builder = WalkBuilder::new(project_root);
 
   // Default and custom ignores, matching walk_project
-  let default_ignore = get_default_ignore_file();
-  if default_ignore.exists() {
-    builder.add_ignore(default_ignore);
-  }
-  builder
-    .overrides(overrides)
-    .max_filesize(max_file_size)
-    .add_custom_ignore_filename(".breezeignore");
+  configure_ignore_rules(&mut builder, max_file_size, custom_ignore_filename);
+  builder.overrides(overrides);
 
   // Build the iterator and check whether our file appears
   for ent in builder.build().flatten() {
@@ -286,7 +412,10 @@ pub fn walker_includes_path(
     if p == path {
       // Only include files; directories are always traversable in walker
       if let Some(ft) = ent.file_type() {
-        return ft.is_file();
+        if !ft.is_file() {
+          return false;
+        }
+        return should_process_entry(&ent, entry_filter);
       }
       return false;
     }
@@ -329,7 +458,6 @@ where
   S: Stream<Item = PathBuf> + Send + 'static,
 {
   let project_root = project_root.as_ref().to_owned();
-  let max_file_size = options.max_file_size;
   let cancel_token = options.cancel_token.clone();
   let observer = observer.clone();
   let existing_hashes = options.existing_hashes.clone();
@@ -353,7 +481,7 @@ where
       match tokio::fs::metadata(&path).await {
         Ok(meta) => {
           // File exists, check if walker would include this file (inherit ignores/VCS pruning)
-          if walker_includes_path(&project_root, &path, max_file_size) {
+          if is_included_path_with_options(&project_root, &path, &options) {
             let size = meta.len();
             file_entries.push((path, size));
           } else if existing_hashes.contains_key(&path) {
@@ -435,25 +563,22 @@ where
 async fn collect_files_with_sizes(
   path: &Path,
   max_file_size: Option<u64>,
+  custom_ignore_filename: Option<String>,
+  entry_filter: Option<EntryFilter>,
 ) -> Result<Vec<(PathBuf, u64)>, std::io::Error> {
-  // Use tokio's spawn_blocking for the walker
+  // Use a dedicated thread for the synchronous walker.
   let path = path.to_owned();
+  let (tx, rx) = oneshot::channel();
 
-  tokio::task::spawn_blocking(move || {
+  std::thread::spawn(move || {
     let mut entries = Vec::new();
     let mut builder = WalkBuilder::new(&path);
 
-    // Add our default ignore patterns
-    let default_ignore = get_default_ignore_file();
-    if default_ignore.exists() {
-      builder.add_ignore(default_ignore);
-    }
+    configure_ignore_rules(&mut builder, max_file_size, custom_ignore_filename.as_deref());
 
     // Filter entries using the same logic we use downstream (no binary/empty files)
-    builder
-      .max_filesize(max_file_size)
-      .filter_entry(should_process_entry)
-      .add_custom_ignore_filename(".breezeignore");
+    let entry_filter = entry_filter.clone();
+    builder.filter_entry(move |entry| should_process_entry(entry, entry_filter.as_ref()));
 
     for entry in builder.build().flatten() {
       if let Some(file_type) = entry.file_type()
@@ -466,13 +591,18 @@ async fn collect_files_with_sizes(
         }
       }
     }
-    Ok(entries)
+    let _ = tx.send(Ok(entries));
+  });
+
+  rx.await.unwrap_or_else(|_| {
+    Err(std::io::Error::new(
+      std::io::ErrorKind::Other,
+      "collector thread failed",
+    ))
   })
-  .await?
 }
 
 /// Process files using dual-pool work-stealing approach
-#[allow(clippy::too_many_arguments)]
 async fn process_with_dual_pools(
   file_entries: Vec<(PathBuf, u64)>,
   config: ChunkerConfig,
@@ -824,6 +954,7 @@ mod tests {
   use super::*;
   use crate::types::Chunk;
   use std::fs;
+  use std::path::PathBuf;
   use tempfile::TempDir;
   use tokio_stream::StreamExt;
 
@@ -1002,6 +1133,9 @@ python -m pytest tests/
     // Create .gitignore
     fs::write(base_path.join(".gitignore"), "target/\n*.log\n").unwrap();
 
+    // Create custom ignore file for predicate tests
+    fs::write(base_path.join(".appignore"), "scripts/\n").unwrap();
+
     // Create a file in .git (should be ignored)
     fs::write(base_path.join(".git/config"), "[core]\nrepositoryformatversion = 0\n").unwrap();
 
@@ -1032,6 +1166,8 @@ python -m pytest tests/
         large_file_threads: 2,
         existing_hashes: std::collections::BTreeMap::new(),
         cancel_token: None,
+        custom_ignore_filename: None,
+        entry_filter: None,
       },
     );
 
@@ -1072,6 +1208,80 @@ python -m pytest tests/
     );
   }
 
+  #[tokio::test]
+  async fn test_is_ignored_path_default_rules() {
+    let temp_dir = create_test_project().await;
+    let path = temp_dir.path();
+    let options = WalkOptions {
+      custom_ignore_filename: None,
+      ..WalkOptions::default()
+    };
+
+    let git_config = path.join(".git/config");
+    assert!(is_ignored_path(path, &git_config, &options));
+
+    let src_file = path.join("src/calculator.py");
+    assert!(!is_ignored_path(path, &src_file, &options));
+  }
+
+  #[tokio::test]
+  async fn test_is_ignored_path_custom_ignore_file() {
+    let temp_dir = create_test_project().await;
+    let path = temp_dir.path();
+    let options = WalkOptions {
+      custom_ignore_filename: Some(".appignore".to_string()),
+      ..WalkOptions::default()
+    };
+
+    let ignored_script = path.join("scripts/test.py");
+    assert!(is_ignored_path(path, &ignored_script, &options));
+
+    let src_file = path.join("src/calculator.py");
+    assert!(!is_ignored_path(path, &src_file, &options));
+  }
+
+  #[tokio::test]
+  async fn test_is_ignored_path_custom_entry_filter() {
+    let temp_dir = create_test_project().await;
+    let path = temp_dir.path();
+    let entry_filter: EntryFilter =
+      Arc::new(|entry| entry.file_type().is_some_and(|ft| ft.is_dir()) || entry.path().ends_with("test.bin"));
+    let options = WalkOptions {
+      entry_filter: Some(entry_filter),
+      ..WalkOptions::default()
+    };
+
+    let test_bin = path.join("test.bin");
+    assert!(!is_ignored_path(path, &test_bin, &options));
+  }
+
+  #[tokio::test]
+  async fn test_is_ignored_path_text_only_filter_excludes_known_binary() {
+    let fixtures_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let options = WalkOptions {
+      entry_filter: Some(Arc::new(process_text_files_only)),
+      ..WalkOptions::default()
+    };
+
+    let pdf_path = fixtures_dir.join("unicode_professional_demo.pdf");
+    assert!(is_ignored_path(&fixtures_dir, &pdf_path, &options));
+
+    let docx_path = fixtures_dir.join("word_default.docx");
+    assert!(is_ignored_path(&fixtures_dir, &docx_path, &options));
+  }
+
+  #[tokio::test]
+  async fn test_is_ignored_path_allows_known_binary_formats() {
+    let fixtures_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let options = WalkOptions::default();
+
+    let pdf_path = fixtures_dir.join("unicode_professional_demo.pdf");
+    assert!(!is_ignored_path(&fixtures_dir, &pdf_path, &options));
+
+    let docx_path = fixtures_dir.join("word_default.docx");
+    assert!(!is_ignored_path(&fixtures_dir, &docx_path, &options));
+  }
+
   struct CountingObserver {
     hits: Arc<AtomicUsize>,
   }
@@ -1101,6 +1311,8 @@ python -m pytest tests/
         large_file_threads: 2,
         existing_hashes: std::collections::BTreeMap::new(),
         cancel_token: None,
+        custom_ignore_filename: None,
+        entry_filter: None,
       },
       observer,
     );
@@ -1132,6 +1344,8 @@ python -m pytest tests/
         large_file_threads: 2,
         existing_hashes: std::collections::BTreeMap::new(),
         cancel_token: None,
+        custom_ignore_filename: None,
+        entry_filter: None,
       },
     );
 
@@ -1172,6 +1386,8 @@ python -m pytest tests/
         large_file_threads: 2,
         existing_hashes: std::collections::BTreeMap::new(),
         cancel_token: None,
+        custom_ignore_filename: None,
+        entry_filter: None,
       },
     );
 
@@ -1201,6 +1417,8 @@ python -m pytest tests/
           large_file_threads: 2,
           existing_hashes: std::collections::BTreeMap::new(),
           cancel_token: None,
+          custom_ignore_filename: None,
+          entry_filter: None,
         },
       );
 
@@ -1341,7 +1559,9 @@ fn main() {
   }
 
   fn fixture_path(name: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures").join(name)
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+      .join("fixtures")
+      .join(name)
   }
 
   #[tokio::test]
@@ -1363,7 +1583,9 @@ fn main() {
       }
 
       match project_chunk.chunk {
-        Chunk::EndOfFile { content, file_metadata, .. } => {
+        Chunk::EndOfFile {
+          content, file_metadata, ..
+        } => {
           saw_eof = true;
           assert!(content.is_none(), "expected no utf-8 content for pdf");
           let metadata = file_metadata.expect("expected file metadata for pdf");
@@ -1398,7 +1620,9 @@ fn main() {
       }
 
       match project_chunk.chunk {
-        Chunk::EndOfFile { content, file_metadata, .. } => {
+        Chunk::EndOfFile {
+          content, file_metadata, ..
+        } => {
           saw_eof = true;
           assert!(content.is_none(), "expected no utf-8 content for docx");
           let metadata = file_metadata.expect("expected file metadata for docx");
@@ -1478,5 +1702,4 @@ fn main() {
 
     assert!(saw_delete, "expected delete chunk for unsupported file");
   }
-
 }
