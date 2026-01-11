@@ -1,0 +1,87 @@
+name: "Setup Build Environment"
+description: "Sets up the complete build environment for niblits"
+# Policy: This composite action is intentionally comprehensive and must not be split into
+# "lighter variants". All jobs should use this action as-is.
+inputs:
+  rust-target:
+    description: "Rust target triple to install (optional)"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install mold linker and C++ libraries on Linux
+      run: |
+        set -euo pipefail
+
+        # We need to ensure that all the C++ uses the same standard library
+        # Install the same LLVM major version as the Rust toolchain
+        if command -v sudo >/dev/null 2>&1; then
+          SUDO="sudo"
+        else
+          SUDO=""
+        fi
+
+        $SUDO wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | $SUDO tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+        echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | $SUDO tee /etc/apt/sources.list.d/llvm-21.list
+        $SUDO apt-get update
+        $SUDO apt-get install -y mold libssl-dev pkg-config libc++-21-dev libc++abi-21-dev clang-21
+        ARCH=$(uname -m)
+        echo "CXXFLAGS=-stdlib=libc++" >> $GITHUB_ENV
+        echo "CC=clang-21" >> $GITHUB_ENV
+        echo "CXX=clang++-21" >> $GITHUB_ENV
+        echo "CXXSTDLIB=c++" >> $GITHUB_ENV
+
+        # Configure Rust to use clang with mold for linking
+        RUSTFLAGS_VALUE="-C link-arg=-fuse-ld=mold"
+
+        if [ "$ARCH" = "aarch64" ]; then
+          if [[ ! -e /usr/lib/aarch64-linux-gnu/libc++.so ]] || [[ -L /usr/lib/aarch64-linux-gnu/libc++.so && ! -e /usr/lib/aarch64-linux-gnu/libc++.so ]]; then
+            $SUDO ln -sf /usr/lib/aarch64-linux-gnu/libc++.so.1 /usr/lib/aarch64-linux-gnu/libc++.so
+          fi
+
+          echo "Setting ARM64-specific environment variables"
+          echo "CFLAGS=-I/usr/include -I/usr/include/aarch64-linux-gnu" >> $GITHUB_ENV
+          RUSTFLAGS_VALUE="$RUSTFLAGS_VALUE -L/usr/lib/aarch64-linux-gnu"
+        fi
+
+        if [ -n "${RUSTFLAGS:-}" ]; then
+          RUSTFLAGS_VALUE="${RUSTFLAGS} ${RUSTFLAGS_VALUE}"
+        fi
+
+        echo "RUSTFLAGS=$RUSTFLAGS_VALUE" >> $GITHUB_ENV
+      shell: bash
+
+    - name: Install tesseract OCR
+      run: |
+        set -euo pipefail
+
+        if command -v sudo >/dev/null 2>&1; then
+          SUDO="sudo"
+        else
+          SUDO=""
+        fi
+
+        $SUDO apt-get update
+        $SUDO apt-get install -y tesseract-ocr
+      shell: bash
+
+    - name: Install mise
+      uses: jdx/mise-action@v3
+      env:
+        MISE_GITHUB_TOKEN: ${{ secrets.MISE_GITHUB_TOKEN }}
+        CARGO_REGISTRIES_FORGEJO_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRIES_FORGEJO_TOKEN }}"
+      with:
+        experimental: true
+        install: true
+        cache: false
+
+    - name: Install npm dependencies
+      run: bun install
+      shell: bash
+
+    - name: Install Rust target
+      if: inputs.rust-target != ''
+      run: rustup target add ${{ inputs.rust-target }}
+      shell: bash
