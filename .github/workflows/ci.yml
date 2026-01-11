@@ -9,8 +9,6 @@ jobs:
   build-and-publish:
     runs-on:
       - ubuntu-latest
-    container:
-      image: casualjim/rust-builder:1.91-2
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,8 +18,8 @@ jobs:
       - name: Install mise
         uses: jdx/mise-action@v3
         env:
-          MISE_GITHUB_TOKEN: ${{ secrets.MISE_GITHUB_TOKEN }}
-          CARGO_REGISTRIES_FORGEJO_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRIES_FORGEJO_TOKEN }}"
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: "${{ secrets.CRATES_IO_TOKEN }}"
         with:
           experimental: true
           install: true
@@ -33,14 +31,14 @@ jobs:
 
       - name: Run tests
         env:
-          CARGO_REGISTRIES_FORGEJO_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRIES_FORGEJO_TOKEN }}"
+          CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}"
         run: |
           cargo nextest run --all-features --no-tests pass
 
       - name: Publish to Cargo Registry
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
-          CARGO_REGISTRIES_FORGEJO_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRIES_FORGEJO_TOKEN }}"
+          CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN }}"
         run: |
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git config --global user.name "github-actions[bot]"
