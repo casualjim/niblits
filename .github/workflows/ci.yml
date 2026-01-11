@@ -8,9 +8,7 @@ on:
 jobs:
   build-and-publish:
     runs-on:
-      - docker
-      - linux
-      - amd64
+      - ubuntu-latest
     container:
       image: casualjim/rust-builder:1.91-2
     steps:
@@ -20,7 +18,7 @@ jobs:
           fetch-depth: 1
 
       - name: Install mise
-        uses: https://github.com/jdx/mise-action@v3
+        uses: jdx/mise-action@v3
         env:
           MISE_GITHUB_TOKEN: ${{ secrets.MISE_GITHUB_TOKEN }}
           CARGO_REGISTRIES_FORGEJO_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRIES_FORGEJO_TOKEN }}"
@@ -44,6 +42,6 @@ jobs:
         env:
           CARGO_REGISTRIES_FORGEJO_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRIES_FORGEJO_TOKEN }}"
         run: |
-          git config --global user.email "mctest@wagyu.icu"
-          git config --global user.name "Bob the Builder"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
           cargo release patch --execute --no-confirm --all-features

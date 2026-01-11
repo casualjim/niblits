@@ -1,5 +1,5 @@
 {
-  "name": "text-chunking",
+  "name": "niblits",
   "private": true,
   "devDependencies": {
     "@types/bun": "^1.2.23",

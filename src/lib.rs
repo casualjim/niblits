@@ -158,7 +158,7 @@ impl Default for ChunkerConfig {
 ///
 /// # Example
 /// ```
-/// let languages = text_chunking::supported_languages();
+/// let languages = niblits::supported_languages();
 /// assert!(languages.contains(&"rust"));
 /// ```
 pub fn supported_languages() -> Vec<&'static str> {
@@ -175,8 +175,8 @@ pub fn supported_languages() -> Vec<&'static str> {
 ///
 /// # Example
 /// ```
-/// assert!(text_chunking::is_language_supported("rust"));
-/// assert!(text_chunking::is_language_supported("Python")); // case-insensitive
+/// assert!(niblits::is_language_supported("rust"));
+/// assert!(niblits::is_language_supported("Python")); // case-insensitive
 /// ```
 pub fn is_language_supported(name: &str) -> bool {
   languages::is_language_supported(name)

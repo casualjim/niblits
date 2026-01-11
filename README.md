@@ -1,4 +1,4 @@
-# text-chunking
+# niblits
 
 A powerful, token-aware text chunking library for processing multiple file formats with language-aware semantic splitting.
 
@@ -38,13 +38,13 @@ This library provides streaming, async-first text chunking capabilities designed
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-text-chunking = "0.1.0"
+niblits = "0.3.0"
 tokio = { version = "1", features = ["rt", "macros"] }
 futures = "0.3"
 ```
 
 ```rust
-use text_chunking::{chunk_stream, ChunkerConfig, Tokenizer};
+use niblits::{chunk_stream, ChunkerConfig, Tokenizer};
 use futures::StreamExt;
 use std::io::Cursor;
 
@@ -74,13 +74,13 @@ fn helper() {
             project_chunk => {
                 println!("File: {}", project_chunk.file_path);
                 match project_chunk.chunk {
-                    text_chunking::Chunk::Semantic(chunk) => {
+                    niblits::Chunk::Semantic(chunk) => {
                         println!("Semantic chunk: {} bytes", chunk.text.len());
                     }
-                    text_chunking::Chunk::Text(chunk) => {
+                    niblits::Chunk::Text(chunk) => {
                         println!("Text chunk: {} bytes", chunk.text.len());
                     }
-                    text_chunking::Chunk::EndOfFile { expected_chunks, .. } => {
+                    niblits::Chunk::EndOfFile { expected_chunks, .. } => {
                         println!("File complete. Expected {} chunks", expected_chunks);
                     }
                     _ => {}
@@ -129,7 +129,7 @@ pub enum Tokenizer {
 Check supported programming languages:
 
 ```rust
-use text_chunking::{supported_languages, is_language_supported};
+use niblits::{supported_languages, is_language_supported};
 
 // Get all supported languages
 let languages = supported_languages();
@@ -181,7 +181,7 @@ let code_stream = chunk_stream("script.py", python_file, config).await;
 ### Walking Projects
 
 ```rust
-use text_chunking::{walk_project, WalkOptions};
+use niblits::{walk_project, WalkOptions};
 use futures::StreamExt;
 
 let mut stream = walk_project(
@@ -254,7 +254,7 @@ mise build:rust     # Rust-only build
 
 ```bash
 mise test                    # All tests
-mise test:rust --package text-chunking  # Crate tests only
+mise test:rust  # Crate tests only
 ```
 
 ## Dependencies
@@ -267,4 +267,4 @@ Key dependencies:
 - `oxidize-pdf`: PDF text extraction
 - `docx-parser`: Word document parsing
 - `htmd`: HTML processing
-- `hyperpolyglot`: Language detection
+- `palate`: Language detection

@@ -1,20 +1,21 @@
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+
+use blake3::Hasher;
+use futures::{Stream, StreamExt};
+use ignore::{DirEntry, WalkBuilder, overrides::OverrideBuilder};
+use tokio::sync::{mpsc, oneshot};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info};
+
 use crate::types::LineIndex;
 use crate::{
   Chunk, ChunkError, ChunkerConfig, ChunkerOverrides, CodeParseObserver, FileMetadata, ProjectChunk, Tokenizer,
   chunk_stream, chunk_stream_with_overrides,
 };
-use blake3::Hasher;
-use futures::{Stream, StreamExt};
-use ignore::{DirEntry, WalkBuilder, overrides::OverrideBuilder};
-use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{mpsc, oneshot};
-use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info};
 
 pub type EntryFilter = Arc<dyn Fn(&DirEntry) -> bool + Send + Sync + 'static>;
 
@@ -28,7 +29,7 @@ fn get_default_ignore_file() -> &'static PathBuf {
   DEFAULT_IGNORE_FILE.get_or_init(|| {
     // Create a temporary file with our default patterns
     let temp_dir = std::env::temp_dir();
-    let ignore_path = temp_dir.join("text-chunking-default-ignore");
+    let ignore_path = temp_dir.join("niblits-default-ignore");
 
     // Write the default patterns to the file
     if let Err(err) = std::fs::write(&ignore_path, DEFAULT_IGNORE_PATTERNS) {
@@ -272,8 +273,8 @@ pub fn process_supported_files(entry: &DirEntry) -> bool {
     return false;
   }
 
-  // If infer can't determine, check with hyperpolyglot
-  if !hyperpolyglot::detect(path).is_ok() {
+  // If infer can't determine, check with palate
+  if !palate::detect(path).is_ok() {
     debug!("Skipping binary file: {}", path.display());
     return false;
   }
@@ -315,8 +316,8 @@ fn is_text_file(path: &Path) -> bool {
     return file_type.matcher_type() == infer::MatcherType::Text;
   }
 
-  // If infer can't determine, check with hyperpolyglot
-  hyperpolyglot::detect(path).is_ok()
+  // If infer can't determine, check with palate
+  palate::detect(path).is_ok()
 }
 
 fn configure_ignore_rules(builder: &mut WalkBuilder, max_file_size: Option<u64>, custom_ignore_filename: Option<&str>) {
@@ -829,7 +830,7 @@ fn process_file<P: AsRef<Path>>(
   async_stream::try_stream! {
       let path_str = path.to_string_lossy().to_string();
 
-      let detection = hyperpolyglot::detect(&path).ok().flatten();
+      let detection = palate::detect(&path).ok().flatten();
 
       // Read file bytes once so we can support binary chunkers too.
       let bytes = match tokio::fs::read(&path).await {
