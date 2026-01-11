@@ -16,6 +16,9 @@ jobs:
 
       - name: Setup build environment
         uses: ./.github/actions/setup-env
+        env:
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_REGISTRY_TOKEN: "Bearer ${{ secrets.CARGO_REGISTRY_TOKEN }}"
 
       - name: Run tests
         env:
