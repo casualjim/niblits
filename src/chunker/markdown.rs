@@ -124,6 +124,7 @@ impl Chunker for MarkdownChunker {
   async fn chunk(&self, file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
     let file_path = file_path.to_path_buf();
+    let eof_file_path = file_path.to_string_lossy().to_string();
     Box::pin(async_stream::try_stream! {
       let mut data = Vec::new();
       reader.read_to_end(&mut data).await?;
@@ -133,8 +134,21 @@ impl Chunker for MarkdownChunker {
 
       let content = String::from_utf8_lossy(&data).into_owned();
       let chunks = chunker.chunk_markdown_string(content, Some(file_path.as_path()))?;
+      let mut chunk_count = 0usize;
       for semantic_chunk in chunks {
+        chunk_count += 1;
         yield Chunk::Text(semantic_chunk);
+      }
+
+      if chunk_count > 0 {
+        yield Chunk::EndOfFile {
+          file_path: eof_file_path,
+          content: None,
+          content_hash: None,
+          file_metadata: None,
+          file_symbols: None,
+          expected_chunks: chunk_count,
+        };
       }
     })
   }

@@ -22,11 +22,12 @@ use tokio::io::{AsyncRead, ReadBuf};
 use crate::chunker::{get_chunker, get_chunker_with_overrides};
 // Re-export main types
 pub use crate::types::{
-  Chunk, ChunkError, ChunkMetadata, CodeParseInfo, CodeParseObserver, FileMetadata, ProjectChunk, SemanticChunk,
+  Chunk, ChunkError, ChunkMetadata, FileMetadata, FileSymbols, OutlineUnit, ProjectChunk,
+  SemanticChunk,
 };
 pub use crate::walker::{
   EntryFilter, WalkOptions, is_ignored_path, is_included_path, process_supported_files, process_text_files_only,
-  walk_files, walk_files_with_observer, walk_project, walk_project_with_observer,
+  walk_files, walk_project,
 };
 pub use chunker::ChunkerOverrides;
 
@@ -245,10 +246,8 @@ where
       let (counting_reader, reader_stats) = CountingReader::new(file_reader);
 
       let mut chunk_stream = selected_chunker.chunk(&path, Box::new(counting_reader)).await;
-      let mut chunk_count = 0usize;
       while let Some(chunk_result) = chunk_stream.next().await {
           let chunk = chunk_result?;
-          chunk_count += 1;
           let file_size = reader_stats.bytes_read();
           yield ProjectChunk {
               file_path: path_str.clone(),
@@ -256,23 +255,6 @@ where
               file_size,
           };
       }
-
-      if chunk_count == 0 {
-          return;
-      }
-
-      let file_size = reader_stats.bytes_read();
-      yield ProjectChunk {
-          file_path: path_str.clone(),
-          chunk: Chunk::EndOfFile {
-              file_path: path_str,
-              content: None,
-              content_hash: None,
-              file_metadata: None,
-              expected_chunks: chunk_count,
-          },
-          file_size,
-      };
   }
 }
 
@@ -296,10 +278,8 @@ where
       let (counting_reader, reader_stats) = CountingReader::new(file_reader);
 
       let mut chunk_stream = selected_chunker.chunk(&path, Box::new(counting_reader)).await;
-      let mut chunk_count = 0usize;
       while let Some(chunk_result) = chunk_stream.next().await {
           let chunk = chunk_result?;
-          chunk_count += 1;
           let file_size = reader_stats.bytes_read();
           yield ProjectChunk {
               file_path: path_str.clone(),
@@ -307,23 +287,6 @@ where
               file_size,
           };
       }
-
-      if chunk_count == 0 {
-          return;
-      }
-
-      let file_size = reader_stats.bytes_read();
-      yield ProjectChunk {
-          file_path: path_str.clone(),
-          chunk: Chunk::EndOfFile {
-              file_path: path_str,
-              content: None,
-              content_hash: None,
-              file_metadata: None,
-              expected_chunks: chunk_count,
-          },
-          file_size,
-      };
   }
 }
 

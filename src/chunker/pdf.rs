@@ -47,6 +47,7 @@ impl Chunker for PdfChunker {
   async fn chunk(&self, file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
     let file_path = file_path.to_path_buf();
+    let eof_file_path = file_path.to_string_lossy().to_string();
     Box::pin(async_stream::try_stream! {
         let mut file = tempfile()?;
 
@@ -88,6 +89,7 @@ impl Chunker for PdfChunker {
         }).await.map_err(|join_err| ChunkError::ParseError(format!("PDF extraction task failed: {join_err}")))??;
 
         let mut line_cursor = 1usize;
+        let mut chunk_count = 0usize;
         for (idx, doc_chunk) in extraction.into_iter().enumerate() {
           if doc_chunk.content.trim().is_empty() {
             continue;
@@ -134,7 +136,19 @@ impl Chunker for PdfChunker {
             )
           };
 
+          chunk_count += 1;
           yield Chunk::Text(semantic_chunk);
+        }
+
+        if chunk_count > 0 {
+          yield Chunk::EndOfFile {
+            file_path: eof_file_path,
+            content: None,
+            content_hash: None,
+            file_metadata: None,
+            file_symbols: None,
+            expected_chunks: chunk_count,
+          };
         }
     })
   }

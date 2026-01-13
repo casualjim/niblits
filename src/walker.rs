@@ -12,10 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::types::LineIndex;
-use crate::{
-  Chunk, ChunkError, ChunkerConfig, ChunkerOverrides, CodeParseObserver, FileMetadata, ProjectChunk, Tokenizer,
-  chunk_stream, chunk_stream_with_overrides,
-};
+use crate::{Chunk, ChunkError, ChunkerConfig, FileMetadata, ProjectChunk, Tokenizer, chunk_stream};
 
 pub type EntryFilter = Arc<dyn Fn(&DirEntry) -> bool + Send + Sync + 'static>;
 
@@ -97,27 +94,16 @@ pub fn walk_project(
   path: impl AsRef<Path>,
   options: WalkOptions,
 ) -> impl Stream<Item = Result<ProjectChunk, ChunkError>> {
-  walk_project_inner(path, options, None)
-}
-
-/// Walk a project directory with options and a parse observer
-pub fn walk_project_with_observer(
-  path: impl AsRef<Path>,
-  options: WalkOptions,
-  observer: Arc<dyn CodeParseObserver>,
-) -> impl Stream<Item = Result<ProjectChunk, ChunkError>> {
-  walk_project_inner(path, options, Some(observer))
+  walk_project_inner(path, options)
 }
 
 fn walk_project_inner(
   path: impl AsRef<Path>,
   options: WalkOptions,
-  observer: Option<Arc<dyn CodeParseObserver>>,
 ) -> impl Stream<Item = Result<ProjectChunk, ChunkError>> {
   let path = path.as_ref().to_owned();
   let max_file_size = options.max_file_size;
   let cancel_token = options.cancel_token.clone();
-  let observer = observer.clone();
 
   // Create a channel for streaming results
   let (tx, rx) = mpsc::channel::<Result<ProjectChunk, ChunkError>>(options.max_parallel * 2);
@@ -222,7 +208,6 @@ fn walk_project_inner(
       options.max_parallel,
       Arc::new(options.existing_hashes),
       cancel_token,
-      observer,
     )
     .await;
   });
@@ -433,34 +418,19 @@ pub fn walk_files<S>(
 where
   S: Stream<Item = PathBuf> + Send + 'static,
 {
-  walk_files_inner(files, project_root, options, None)
-}
-
-/// Process a stream of file paths with options and a parse observer
-pub fn walk_files_with_observer<S>(
-  files: S,
-  project_root: impl AsRef<Path>,
-  options: WalkOptions,
-  observer: Arc<dyn CodeParseObserver>,
-) -> impl Stream<Item = Result<ProjectChunk, ChunkError>>
-where
-  S: Stream<Item = PathBuf> + Send + 'static,
-{
-  walk_files_inner(files, project_root, options, Some(observer))
+  walk_files_inner(files, project_root, options)
 }
 
 fn walk_files_inner<S>(
   files: S,
   project_root: impl AsRef<Path>,
   options: WalkOptions,
-  observer: Option<Arc<dyn CodeParseObserver>>,
 ) -> impl Stream<Item = Result<ProjectChunk, ChunkError>>
 where
   S: Stream<Item = PathBuf> + Send + 'static,
 {
   let project_root = project_root.as_ref().to_owned();
   let cancel_token = options.cancel_token.clone();
-  let observer = observer.clone();
   let existing_hashes = options.existing_hashes.clone();
 
   // Create a channel for streaming results
@@ -552,7 +522,6 @@ where
       options.max_parallel,
       Arc::new(options.existing_hashes),
       cancel_token,
-      observer,
     )
     .await;
   });
@@ -612,7 +581,6 @@ async fn process_with_dual_pools(
   small_file_threads: usize,
   existing_hashes: Arc<std::collections::BTreeMap<PathBuf, [u8; 32]>>,
   cancel_token: Option<CancellationToken>,
-  observer: Option<Arc<dyn CodeParseObserver>>,
 ) {
   use std::collections::VecDeque;
   use std::sync::Mutex;
@@ -642,7 +610,6 @@ async fn process_with_dual_pools(
     let skipped_files = skipped_files.clone();
     let skipped_size = skipped_size.clone();
     let cancel_token = cancel_token.clone();
-    let observer = observer.clone();
 
     let handle = tokio::spawn(async move {
       debug!("Large file worker {} started", i);
@@ -676,13 +643,7 @@ async fn process_with_dual_pools(
 
             // Check if file will be skipped
             let mut chunk_count = 0usize;
-            let mut stream = Box::pin(process_file(
-              &path,
-              size,
-              config.clone(),
-              existing_hash,
-              observer.clone(),
-            ));
+            let mut stream = Box::pin(process_file(&path, size, config.clone(), existing_hash));
             while let Some(result) = stream.next().await {
               chunk_count += 1;
               if tx.send(result).await.is_err() {
@@ -730,7 +691,6 @@ async fn process_with_dual_pools(
     let skipped_files = skipped_files.clone();
     let skipped_size = skipped_size.clone();
     let cancel_token = cancel_token.clone();
-    let observer = observer.clone();
 
     let handle = tokio::spawn(async move {
       debug!("Small file worker {} started", i);
@@ -758,13 +718,7 @@ async fn process_with_dual_pools(
 
             // Check if file will be skipped
             let mut chunk_count = 0usize;
-            let mut stream = Box::pin(process_file(
-              &path,
-              size,
-              config.clone(),
-              existing_hash,
-              observer.clone(),
-            ));
+            let mut stream = Box::pin(process_file(&path, size, config.clone(), existing_hash));
             while let Some(result) = stream.next().await {
               chunk_count += 1;
               if tx.send(result).await.is_err() {
@@ -823,7 +777,6 @@ fn process_file<P: AsRef<Path>>(
   file_size: u64,
   config: ChunkerConfig,
   existing_hash: Option<[u8; 32]>,
-  observer: Option<Arc<dyn CodeParseObserver>>,
 ) -> impl Stream<Item = Result<ProjectChunk, ChunkError>> + Send {
   let path = path.as_ref().to_owned();
 
@@ -897,22 +850,7 @@ fn process_file<P: AsRef<Path>>(
       let reader = std::io::Cursor::new(bytes);
       let mut stream: std::pin::Pin<
         Box<dyn Stream<Item = Result<ProjectChunk, ChunkError>> + Send>,
-      > = if let Some(observer) = observer {
-        Box::pin(
-          chunk_stream_with_overrides(
-            &path,
-            reader,
-            config,
-            ChunkerOverrides {
-              code_parse_observer: Some(observer),
-              ..Default::default()
-            },
-          )
-          .await,
-        )
-      } else {
-        Box::pin(chunk_stream(&path, reader, config).await)
-      };
+      > = Box::pin(chunk_stream(&path, reader, config).await);
 
           while let Some(chunk_result) = stream.next().await {
               let mut project_chunk = match chunk_result {
@@ -935,12 +873,18 @@ fn process_file<P: AsRef<Path>>(
               unreachable!();
             }
           };
-          if let Chunk::EndOfFile { file_path, expected_chunks, .. } = project_chunk.chunk {
+          if let Chunk::EndOfFile {
+            file_path,
+            expected_chunks,
+            file_symbols,
+            ..
+          } = project_chunk.chunk {
               project_chunk.chunk = Chunk::EndOfFile {
                   file_path,
                   content: content_for_eof.clone(),
                   content_hash: Some(content_hash),
                   file_metadata: Some(file_metadata.clone()),
+                  file_symbols,
                   expected_chunks,
               };
           }
@@ -1283,51 +1227,6 @@ python -m pytest tests/
     assert!(!is_ignored_path(&fixtures_dir, &docx_path, &options));
   }
 
-  struct CountingObserver {
-    hits: Arc<AtomicUsize>,
-  }
-
-  impl CodeParseObserver for CountingObserver {
-    fn on_parse(&self, _info: crate::CodeParseInfo) -> Result<(), ChunkError> {
-      self.hits.fetch_add(1, Ordering::Relaxed);
-      Ok(())
-    }
-  }
-
-  #[tokio::test]
-  async fn test_walk_project_with_observer() {
-    let temp_dir = create_test_project().await;
-    let path = temp_dir.path();
-    let hits = Arc::new(AtomicUsize::new(0));
-    let observer = Arc::new(CountingObserver { hits: hits.clone() });
-
-    let mut stream = walk_project_with_observer(
-      path,
-      WalkOptions {
-        max_chunk_size: 500,
-        tokenizer: Tokenizer::Characters,
-        overlap_percentage: 0.0,
-        max_parallel: 4,
-        max_file_size: None,
-        large_file_threads: 2,
-        existing_hashes: std::collections::BTreeMap::new(),
-        cancel_token: None,
-        custom_ignore_filename: None,
-        entry_filter: None,
-      },
-      observer,
-    );
-
-    while let Some(result) = stream.next().await {
-      result.unwrap();
-    }
-
-    assert!(
-      hits.load(Ordering::Relaxed) > 0,
-      "Observer should be called at least once"
-    );
-  }
-
   #[tokio::test]
   async fn test_walk_project_languages() {
     let temp_dir = create_test_project().await;
@@ -1457,7 +1356,6 @@ fn helper() {
       file_size,
       ChunkerConfig::default(),
       None,
-      None,
     ));
 
     let mut chunks = Vec::new();
@@ -1521,7 +1419,6 @@ fn main() {
       file_size,
       ChunkerConfig::default(),
       None,
-      None,
     ));
 
     let mut chunks = Vec::new();
@@ -1548,7 +1445,6 @@ fn main() {
       file_size,
       ChunkerConfig::default(),
       Some(content_hash),
-      None,
     ));
 
     let mut chunks = Vec::new();

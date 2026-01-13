@@ -1,4 +1,4 @@
-use std::{path::Path, pin::Pin, sync::Arc};
+use std::{path::Path, pin::Pin};
 
 mod code;
 mod docx;
@@ -91,9 +91,6 @@ pub trait Chunker: Send + Sync {
 pub struct ChunkerOverrides {
   /// Replace the default code chunker in the chain.
   pub code_chunker: Option<Box<dyn Chunker>>,
-  /// Observer invoked when the default code chunker parses a file.
-  /// Ignored when `code_chunker` is provided.
-  pub code_parse_observer: Option<Arc<dyn CodeParseObserver>>,
 }
 
 #[cfg(test)]
@@ -179,14 +176,11 @@ fn build_chunker_chain_with_overrides(
   let overlap = compute_overlap(config)?;
   let code_chunker = match overrides.code_chunker {
     Some(chunker) => chunker,
-    None => {
-      let chunker = CodeChunker::new(config.max_chunk_size, config.tokenizer.clone(), overlap)?;
-      let chunker = match overrides.code_parse_observer {
-        Some(observer) => chunker.with_parse_observer(observer),
-        None => chunker,
-      };
-      Box::new(chunker)
-    }
+    None => Box::new(CodeChunker::new(
+      config.max_chunk_size,
+      config.tokenizer.clone(),
+      overlap,
+    )?),
   };
 
   let chain = Box::new(ChunkerChainNode::new(Box::new(TextChunker::new(

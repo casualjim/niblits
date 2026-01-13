@@ -73,6 +73,7 @@ impl Chunker for TextChunker {
   async fn chunk(&self, file_path: &Path, mut reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
     let file_path = file_path.to_path_buf();
+    let eof_file_path = file_path.to_string_lossy().to_string();
     Box::pin(async_stream::try_stream! {
         let mut data = Vec::new();
         reader.read_to_end(&mut data).await?;
@@ -95,6 +96,7 @@ impl Chunker for TextChunker {
 
         let line_index = LineIndex::new(&content);
         let mut prev_end_offset = None;
+        let mut chunk_count = 0usize;
         for (idx, (offset, chunk_text)) in splitter.chunk_indices(&content).enumerate() {
             if chunk_text.trim().is_empty() {
                 continue;
@@ -152,7 +154,19 @@ impl Chunker for TextChunker {
               )
             };
 
+            chunk_count += 1;
             yield Chunk::Text(semantic_chunk);
+        }
+
+        if chunk_count > 0 {
+          yield Chunk::EndOfFile {
+            file_path: eof_file_path,
+            content: None,
+            content_hash: None,
+            file_metadata: None,
+            file_symbols: None,
+            expected_chunks: chunk_count,
+          };
         }
     })
   }

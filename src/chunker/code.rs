@@ -4,7 +4,7 @@ use super::{ChunkStream, Chunker, ConcreteSizer};
 use crate::{
   Tokenizer,
   languages::{self, *},
-  metadata_extractor::extract_metadata_from_tree,
+  metadata_extractor::{extract_file_symbols, extract_metadata_from_tree},
   types::*,
 };
 use async_trait::async_trait;
@@ -17,7 +17,6 @@ pub struct CodeChunker {
   max_chunk_size: usize,
   chunk_overlap: usize,
   chunk_sizer: ConcreteSizer,
-  parse_observer: Option<Arc<dyn CodeParseObserver>>,
 }
 
 impl CodeChunker {
@@ -31,13 +30,7 @@ impl CodeChunker {
       max_chunk_size,
       chunk_overlap,
       chunk_sizer,
-      parse_observer: None,
     }
-  }
-
-  pub fn with_parse_observer(mut self, observer: Arc<dyn CodeParseObserver>) -> Self {
-    self.parse_observer = Some(observer);
-    self
   }
 }
 
@@ -80,6 +73,7 @@ impl Chunker for CodeChunker {
   async fn chunk(&self, path: &Path, reader: Box<dyn AsyncRead + Unpin + Send>) -> ChunkStream {
     let chunker = self.clone();
     let path = path.to_path_buf();
+    let eof_file_path = path.to_string_lossy().to_string();
 
     Box::pin(async_stream::try_stream! {
         let peekable = PeekableReader::new(reader, 51200);
@@ -113,17 +107,7 @@ impl Chunker for CodeChunker {
             .parse(content.as_ref(), None)
             .ok_or_else(|| ChunkError::ParseError("Failed to parse content".to_string()))?;
         let tree = Arc::new(tree);
-
-        if let Some(observer) = &chunker.parse_observer {
-            let parse_info = CodeParseInfo {
-                file_path: path.to_string_lossy().to_string(),
-                language_id: language_name.clone(),
-                language: ts_language.clone(),
-                tree: Arc::clone(&tree),
-                source: Arc::clone(&content),
-            };
-            observer.on_parse(parse_info)?;
-        }
+        let file_symbols = extract_file_symbols(tree.as_ref(), content.as_ref());
 
         let config = ChunkConfig::new(chunker.max_chunk_size)
           .with_sizer(&chunker.chunk_sizer)
@@ -132,6 +116,7 @@ impl Chunker for CodeChunker {
           .map_err(|e| ChunkError::ParseError(format!("Failed to create splitter: {}", e)))?;
 
         let line_index = LineIndex::new(content.as_ref());
+        let mut chunk_count = 0usize;
         for (idx, (offset, chunk_text)) in splitter.chunk_indices(content.as_ref()).enumerate() {
             if chunk_text.trim().is_empty() {
                 continue;
@@ -200,7 +185,19 @@ impl Chunker for CodeChunker {
               )
             };
 
+            chunk_count += 1;
             yield Chunk::Semantic(semantic_chunk);
+        }
+
+        if chunk_count > 0 {
+          yield Chunk::EndOfFile {
+            file_path: eof_file_path,
+            content: None,
+            content_hash: None,
+            file_metadata: None,
+            file_symbols: Some(file_symbols),
+            expected_chunks: chunk_count,
+          };
         }
     })
   }
@@ -215,8 +212,6 @@ mod tests {
     types::{Chunk, ChunkError},
   };
   use futures::StreamExt;
-  use std::sync::{Arc, Mutex};
-
   #[tokio::test]
   async fn test_streaming_time_to_first_chunk_code() {
     let chunker = CodeChunker::new(20, Tokenizer::Characters, 0).unwrap();
@@ -237,40 +232,6 @@ mod tests {
   async fn test_code_chunker_creation() {
     let chunker = CodeChunker::new(1000, Tokenizer::Characters, 0).unwrap();
     assert_eq!(chunker.max_chunk_size, 1000);
-  }
-
-  struct TestParseObserver {
-    seen: Arc<Mutex<Option<CodeParseInfo>>>,
-  }
-
-  impl CodeParseObserver for TestParseObserver {
-    fn on_parse(&self, info: CodeParseInfo) -> Result<(), ChunkError> {
-      let mut guard = self.seen.lock().expect("observer lock poisoned");
-      *guard = Some(info);
-      Ok(())
-    }
-  }
-
-  #[tokio::test]
-  async fn test_code_chunker_parse_observer() {
-    let seen = Arc::new(Mutex::new(None));
-    let observer = Arc::new(TestParseObserver {
-      seen: Arc::clone(&seen),
-    });
-    let chunker = CodeChunker::new(100, Tokenizer::Characters, 0)
-      .unwrap()
-      .with_parse_observer(observer);
-
-    let code = "fn main() {\n  println!(\"hi\");\n}\n";
-    let reader = memory_async_reader(code.as_bytes().to_vec());
-    let mut stream = chunker.chunk(Path::new("main.rs"), reader).await;
-
-    let _ = stream.next().await;
-
-    let info = seen.lock().expect("observer lock poisoned").clone();
-    let info = info.expect("observer should be called");
-    assert!(info.language_id.to_lowercase().contains("rust"));
-    assert!(info.source.contains("fn main"));
   }
 
   #[tokio::test]
@@ -543,8 +504,12 @@ def validate(item):
       chunks.push(result.expect("Should chunk Python code"));
     }
 
-    assert!(chunks.len() > 1);
-    assert!(chunks.iter().all(|chunk| matches!(chunk, Chunk::Semantic(_))));
+    let semantic_chunks: Vec<_> = chunks
+      .iter()
+      .filter(|chunk| matches!(chunk, Chunk::Semantic(_)))
+      .collect();
+
+    assert!(semantic_chunks.len() > 1);
   }
 
   #[tokio::test]
@@ -590,8 +555,13 @@ fn helper() {
       chunks.push(result.expect("Should chunk Python code"));
     }
 
-    assert!(chunks.iter().all(|chunk| matches!(chunk, Chunk::Semantic(_))));
-    for chunk in chunks {
+    let semantic_chunks: Vec<_> = chunks
+      .into_iter()
+      .filter(|chunk| matches!(chunk, Chunk::Semantic(_)))
+      .collect();
+
+    assert!(!semantic_chunks.is_empty());
+    for chunk in semantic_chunks {
       if let Chunk::Semantic(sc) = chunk {
         assert!(sc.start_byte <= sc.end_byte);
         assert_eq!(sc.text.len(), sc.end_byte - sc.start_byte);
@@ -651,5 +621,71 @@ enum Result<T, E> {
     assert!(!enum_chunks.is_empty());
 
     assert!(chunks.len() > 1);
+  }
+
+  #[tokio::test]
+  async fn test_eof_contains_file_symbols_outline() {
+    let chunker = CodeChunker::new(1000, Tokenizer::Characters, 0).unwrap();
+    let code = r#"
+struct Foo {
+    value: i32,
+}
+
+impl Foo {
+    fn new() -> Self {
+        Self { value: 0 }
+    }
+}
+
+fn helper() -> i32 {
+    42
+}
+"#;
+
+    let reader = memory_async_reader(code.as_bytes().to_vec());
+    let mut stream = chunker.chunk(Path::new("symbols.rs"), reader).await;
+
+    let mut eof_symbols = None;
+    while let Some(result) = stream.next().await {
+      let chunk = result.expect("chunking should succeed");
+      if let Chunk::EndOfFile { file_symbols, .. } = chunk {
+        eof_symbols = file_symbols;
+      }
+    }
+
+    let file_symbols = eof_symbols.expect("EOF should include file symbols");
+    assert!(!file_symbols.outline.is_empty(), "expected non-empty outline");
+
+    let mut sorted = file_symbols.outline.clone();
+    sorted.sort_by(|a, b| {
+      a.start_byte
+        .cmp(&b.start_byte)
+        .then_with(|| a.end_byte.cmp(&b.end_byte))
+        .then_with(|| a.kind.cmp(&b.kind))
+        .then_with(|| a.name.as_deref().unwrap_or("").cmp(b.name.as_deref().unwrap_or("")))
+    });
+    assert_eq!(file_symbols.outline, sorted, "outline should be deterministic");
+
+    assert!(
+      file_symbols
+        .outline
+        .iter()
+        .any(|unit| unit.kind == "struct_item" && unit.name.as_deref() == Some("Foo")),
+      "expected struct Foo in outline"
+    );
+    assert!(
+      file_symbols
+        .outline
+        .iter()
+        .any(|unit| unit.kind == "impl_item" && unit.name.as_deref() == Some("Foo")),
+      "expected impl Foo in outline"
+    );
+    assert!(
+      file_symbols
+        .outline
+        .iter()
+        .any(|unit| unit.kind == "function_item" && unit.name.as_deref() == Some("helper")),
+      "expected helper fn in outline"
+    );
   }
 }
