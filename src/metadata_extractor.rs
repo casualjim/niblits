@@ -1,6 +1,6 @@
 use tree_sitter::{Node, Tree, TreeCursor};
 
-use crate::types::{ChunkError, ChunkMetadata};
+use crate::types::{ChunkError, ChunkMetadata, FileSymbols, LineIndex, OutlineUnit};
 
 /// Extracts metadata from a pre-parsed tree-sitter Tree for a code chunk.
 pub fn extract_metadata_from_tree(
@@ -42,6 +42,31 @@ pub fn extract_metadata_from_tree(
   })
 }
 
+/// Extract file-level outline units plus aggregate definitions/references.
+pub fn extract_file_symbols(tree: &Tree, content: &str) -> FileSymbols {
+  let root_node = tree.root_node();
+  let mut cursor = root_node.walk();
+  let line_index = LineIndex::new(content);
+  let mut outline = Vec::new();
+
+  extract_outline_units(&mut cursor, content, &line_index, &mut outline);
+  outline.sort_by(|a, b| {
+    a.start_byte
+      .cmp(&b.start_byte)
+      .then_with(|| a.end_byte.cmp(&b.end_byte))
+      .then_with(|| a.kind.cmp(&b.kind))
+      .then_with(|| a.name.as_deref().unwrap_or("").cmp(b.name.as_deref().unwrap_or("")))
+  });
+
+  let (definitions, references) = extract_symbols_in_range(root_node, content, 0, content.len());
+
+  FileSymbols {
+    outline,
+    definitions,
+    references,
+  }
+}
+
 /// Find the most specific node that fully contains the given byte range.
 fn find_primary_node_for_range(node: Node, start_byte: usize, end_byte: usize) -> Node {
   let mut cursor = node.walk();
@@ -78,6 +103,36 @@ fn visit_node<'a>(
       }
       cursor.goto_parent();
     }
+  }
+}
+
+fn extract_outline_units(
+  cursor: &mut TreeCursor,
+  content: &str,
+  line_index: &LineIndex,
+  outline: &mut Vec<OutlineUnit>,
+) {
+  let node = cursor.node();
+  if is_significant_scope(node.kind()) {
+    let (start_line, end_line) = line_index.line_numbers(node.start_byte(), node.end_byte());
+    outline.push(OutlineUnit {
+      kind: node.kind().to_string(),
+      name: extract_node_name(&node, content),
+      start_byte: node.start_byte(),
+      end_byte: node.end_byte(),
+      start_line,
+      end_line,
+    });
+  }
+
+  if cursor.goto_first_child() {
+    loop {
+      extract_outline_units(cursor, content, line_index, outline);
+      if !cursor.goto_next_sibling() {
+        break;
+      }
+    }
+    cursor.goto_parent();
   }
 }
 

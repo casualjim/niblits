@@ -1,8 +1,6 @@
-use std::sync::Arc;
-
 use blake3::Hasher;
 use thiserror::Error;
-use tree_sitter::{Language, Node, Tree};
+use tree_sitter::Node;
 
 #[derive(Error, Debug)]
 pub enum ChunkError {
@@ -32,11 +30,29 @@ pub enum Chunk {
     content: Option<String>,
     content_hash: Option<[u8; 32]>,
     file_metadata: Option<FileMetadata>,
+    file_symbols: Option<FileSymbols>,
     expected_chunks: usize, // Number of content chunks for this file
   },
   Delete {
     file_path: String,
   },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineUnit {
+  pub kind: String,
+  pub name: Option<String>,
+  pub start_byte: usize,
+  pub end_byte: usize,
+  pub start_line: usize,
+  pub end_line: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FileSymbols {
+  pub outline: Vec<OutlineUnit>,
+  pub definitions: Vec<String>,
+  pub references: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -249,19 +265,6 @@ fn count_line_breaks_in_prefix(text: &str, limit: usize) -> usize {
   }
 
   count
-}
-
-#[derive(Debug, Clone)]
-pub struct CodeParseInfo {
-  pub file_path: String,
-  pub language_id: String,
-  pub language: Language,
-  pub tree: Arc<Tree>,
-  pub source: Arc<str>,
-}
-
-pub trait CodeParseObserver: Send + Sync {
-  fn on_parse(&self, info: CodeParseInfo) -> Result<(), ChunkError>;
 }
 
 /// A chunk from a project file with type information
