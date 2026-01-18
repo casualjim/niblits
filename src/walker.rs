@@ -783,8 +783,6 @@ fn process_file<P: AsRef<Path>>(
   async_stream::try_stream! {
       let path_str = path.to_string_lossy().to_string();
 
-      let detection = palate::detect(&path).ok().flatten();
-
       // Read file bytes once so we can support binary chunkers too.
       let bytes = match tokio::fs::read(&path).await {
           Ok(bytes) => bytes,
@@ -812,8 +810,17 @@ fn process_file<P: AsRef<Path>>(
           return;
       }
 
-      let content = std::str::from_utf8(&bytes).ok().map(str::to_string);
-      let is_text_file = content.is_some();
+      let sniff_len = bytes.len().min(8192);
+      let sniff = &bytes[..sniff_len];
+      let inferred_mime = infer::get(sniff).map(|file_type| file_type.mime_type());
+
+      let is_known_binary =
+          infer::archive::is_pdf(sniff) || (infer::is_document(sniff) && infer::doc::is_docx(sniff));
+      let content = if is_known_binary {
+          None
+      } else {
+          std::str::from_utf8(&bytes).ok().map(str::to_string)
+      };
 
       // Compute hash of the content
       let mut hasher = Hasher::new();
@@ -828,13 +835,58 @@ fn process_file<P: AsRef<Path>>(
           .as_ref()
           .map(|text| LineIndex::new(text).line_count())
           .unwrap_or(0);
+      let primary_language = if infer::archive::is_pdf(sniff) {
+          "pdf".to_string()
+      } else if infer::is_document(sniff) && infer::doc::is_docx(sniff) {
+          "docx".to_string()
+      } else if inferred_mime.is_some_and(|mime| mime == "text/html") {
+          "html".to_string()
+      } else {
+          let sample_len = bytes.len().min(51200);
+          let cursor = std::io::Cursor::new(bytes[..sample_len].to_vec());
+          let peekable = crate::languages::PeekableReader::new(cursor, 51200);
+          let detection = match crate::languages::detect(&path, peekable).await {
+              Ok((detection, _reader)) => detection,
+              Err((_err, _reader)) => None,
+          };
+
+          match detection {
+              Some(d) => {
+                  let language = d.language();
+                  let language_lower = language.to_ascii_lowercase();
+                  if language_lower == "markdown" {
+                      "markdown".to_string()
+                  } else if crate::languages::get_language(language).is_some() {
+                      language_lower
+                  } else {
+                      match inferred_mime {
+                          Some(mime) if mime != "text/plain" => mime
+                              .strip_prefix("text/")
+                              .filter(|subtype| !subtype.is_empty())
+                              .map(|subtype| subtype.to_string())
+                              .unwrap_or_else(|| "text".to_string()),
+                          _ => "text".to_string(),
+                      }
+                  }
+              }
+              None => match inferred_mime {
+                  Some(mime) if mime != "text/plain" => mime
+                      .strip_prefix("text/")
+                      .filter(|subtype| !subtype.is_empty())
+                      .map(|subtype| subtype.to_string())
+                      .unwrap_or_else(|| "text".to_string()),
+                  _ => "text".to_string(),
+              },
+          }
+      };
+      let is_binary = is_known_binary || content.is_none();
       let file_metadata = FileMetadata {
-          primary_language: detection.as_ref().map(|detected| detected.language().to_string()),
+          primary_language,
           size: file_size,
           modified,
           content_hash: content_hash_hex,
           line_count,
-          is_binary: !is_text_file,
+          is_binary,
       };
 
       // Check if file has changed
