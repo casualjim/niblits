@@ -290,12 +290,12 @@ impl ProjectChunk {
 /// File-level metadata
 #[derive(Debug, Clone)]
 pub struct FileMetadata {
-  pub primary_language: Option<String>, // Primary language (e.g., "Python", "Rust")
-  pub size: u64,                        // File size in bytes
-  pub modified: std::time::SystemTime,  // Last modification time
-  pub content_hash: String,             // SHA-256 hash of content
-  pub line_count: usize,                // Total number of lines
-  pub is_binary: bool,                  // Whether file was detected as binary
+  pub primary_language: String,        // Primary language or file type (e.g., "Rust", "pdf")
+  pub size: u64,                       // File size in bytes
+  pub modified: std::time::SystemTime, // Last modification time
+  pub content_hash: String,            // SHA-256 hash of content
+  pub line_count: usize,               // Total number of lines
+  pub is_binary: bool,                 // Whether file was detected as binary
 }
 
 #[cfg(test)]
