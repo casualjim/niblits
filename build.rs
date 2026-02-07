@@ -11,6 +11,21 @@ struct Grammar {
   symbol_name: Option<String>,
 }
 
+/// Get the function name for a grammar, handling special cases where metadata is incorrect
+fn get_grammar_fn_name(grammar: &Grammar) -> String {
+  if grammar.name == "helm" {
+    // The npm package metadata incorrectly lists "go_template" as the symbol,
+    // but the actual library symbol is "tree_sitter_helm"
+    "helm".to_string()
+  } else if let Some(symbol) = &grammar.symbol_name {
+    symbol.clone()
+  } else if grammar.name == "csharp" {
+    "c_sharp".to_string()
+  } else {
+    grammar.name.replace("-", "_")
+  }
+}
+
 fn get_target_parser_path() -> Result<PathBuf, String> {
   // First check if PARSER_LIB environment variable is set
   if let Ok(parser_lib) = env::var("PARSER_LIB") {
@@ -228,13 +243,7 @@ fn generate_bindings(out_path: &Path, compiled_grammars: &[Grammar]) {
 
   // Generate extern declarations
   for grammar in compiled_grammars {
-    let fn_name = if let Some(symbol) = &grammar.symbol_name {
-      symbol.clone()
-    } else if grammar.name == "csharp" {
-      "c_sharp".to_string()
-    } else {
-      grammar.name.replace("-", "_")
-    };
+    let fn_name = get_grammar_fn_name(grammar);
     bindings.push_str(&format!(
       "unsafe extern \"C\" {{ fn tree_sitter_{}() -> *const (); }}\n",
       fn_name
@@ -245,13 +254,7 @@ fn generate_bindings(out_path: &Path, compiled_grammars: &[Grammar]) {
 
   // Generate LanguageFn constants
   for grammar in compiled_grammars {
-    let fn_name = if let Some(symbol) = &grammar.symbol_name {
-      symbol.clone()
-    } else if grammar.name == "csharp" {
-      "c_sharp".to_string()
-    } else {
-      grammar.name.replace("-", "_")
-    };
+    let fn_name = get_grammar_fn_name(grammar);
     let const_name = grammar.name.to_uppercase();
     bindings.push_str(&format!(
       "pub const {}_LANGUAGE: LanguageFn = unsafe {{ LanguageFn::from_raw(tree_sitter_{}) }};\n",

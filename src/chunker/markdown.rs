@@ -114,7 +114,7 @@ impl Chunker for MarkdownChunker {
   ) -> Result<PeekableReader<Box<dyn AsyncRead + Unpin + Send>>, PeekableReader<Box<dyn AsyncRead + Unpin + Send>>> {
     match languages::detect(file_path, reader).await {
       Ok((detection, peekable)) => {
-        let applies = detection.is_some_and(|d| is_markdown_language(d.language()));
+        let applies = detection.is_some_and(|d| is_markdown_language(d.canonical()));
         if applies { Ok(peekable) } else { Err(peekable) }
       }
       Err((_, peekable)) => Err(peekable),
@@ -155,7 +155,7 @@ impl Chunker for MarkdownChunker {
 }
 
 fn is_markdown_language(language: &str) -> bool {
-  matches!(language, "Markdown" | "GitHub Flavored Markdown" | "RMarkdown" | "MDX") || language.ends_with("Markdown")
+  matches!(language, "markdown" | "github_flavored_markdown" | "rmarkdown" | "mdx") || language.ends_with("markdown")
 }
 
 #[cfg(test)]

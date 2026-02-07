@@ -1,9 +1,23 @@
 // Include the auto-generated bindings
 include!(concat!(env!("OUT_DIR"), "/grammars.rs"));
 
-/// Get a LanguageFn by name (case-insensitive, normalized to lowercase)
+/// Normalize a language name to its canonical form
+/// Handles aliases and case normalization
+fn normalize_language_name(name: &str) -> String {
+  let lower = name.to_lowercase();
+  match lower.as_str() {
+    // Common aliases
+    "csharp" => "c_sharp".to_string(),
+    "c#" => "c_sharp".to_string(),
+    "fsharp" => "fsharp".to_string(), // already correct
+    "f#" => "fsharp".to_string(),
+    _ => lower,
+  }
+}
+
+/// Get a LanguageFn by name (case-insensitive, supports aliases)
 pub fn get_language_fn(name: &str) -> Option<tree_sitter_language::LanguageFn> {
-  load_grammar_fn(&name.to_lowercase())
+  load_grammar_fn(&normalize_language_name(name))
 }
 
 /// Get all supported language names
@@ -11,9 +25,9 @@ pub fn supported_languages() -> Vec<&'static str> {
   available_grammars().to_vec()
 }
 
-/// Check if a language is supported (case-insensitive)
+/// Check if a language is supported (case-insensitive, supports aliases)
 pub fn is_language_supported(name: &str) -> bool {
-  load_grammar(&name.to_lowercase()).is_some()
+  load_grammar(&normalize_language_name(name)).is_some()
 }
 
 #[cfg(test)]

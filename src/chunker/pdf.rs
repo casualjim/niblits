@@ -1,12 +1,11 @@
-use std::io::{Seek, Write};
+use std::io::Write;
 use std::path::Path;
 
 use super::{ChunkStream, Chunker, ConcreteSizer};
 use crate::{Tokenizer, languages::PeekableReader, types::*};
 use async_trait::async_trait;
-use oxidize_pdf::ai::DocumentChunker as PdfDocumentChunker;
-use oxidize_pdf::parser::{PdfDocument, PdfReader};
-use tempfile::tempfile;
+use tempfile::NamedTempFile;
+use text_splitter::{ChunkConfig, TextSplitter};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 #[derive(Clone)]
@@ -49,48 +48,109 @@ impl Chunker for PdfChunker {
     let file_path = file_path.to_path_buf();
     let eof_file_path = file_path.to_string_lossy().to_string();
     Box::pin(async_stream::try_stream! {
-        let mut file = tempfile()?;
-
+        // Create temp file and write PDF data to it
+        let mut temp_file = NamedTempFile::new()?;
         let mut buffer = vec![0u8; 8192];
         loop {
           let read = reader.read(&mut buffer).await?;
           if read == 0 {
             break;
           }
-          file.write_all(&buffer[..read])?;
+          temp_file.write_all(&buffer[..read])?;
         }
+        temp_file.flush()?;
 
-        file.rewind()?;
+        // Get the temp file path for pdftotext
+        let temp_path = temp_file.path().to_path_buf();
 
+        // Extract values we need before moving into closure
+        let max_chunk_size = chunker.max_chunk_size;
+        let chunk_overlap = chunker.chunk_overlap;
+        let chunk_sizer = chunker.chunk_sizer.clone();
+        
         let extraction = tokio::task::spawn_blocking(move || {
-          let reader = PdfReader::new(file)
-            .map_err(|err| ChunkError::ParseError(format!("Failed to parse PDF: {err}")))?;
-          let document = PdfDocument::new(reader);
+          // Extract text using poppler (system library) - handles Identity-H encoding correctly
+          let doc = poppler::PopplerDocument::new_from_file(&temp_path, None)
+            .map_err(|err| ChunkError::ParseError(format!("Failed to open PDF: {err}")))?;
 
-          let pages = document
-            .extract_text()
-            .map_err(|err| ChunkError::ParseError(format!("Failed to extract PDF text: {err}")))?;
-
-          if pages.is_empty() {
+          let num_pages = doc.get_n_pages();
+          if num_pages == 0 {
             return Ok(Vec::new());
           }
 
-          let mut page_texts = Vec::with_capacity(pages.len());
-          for (index, page) in pages.into_iter().enumerate() {
-            page_texts.push((index + 1, page.text));
+          // Extract text from each page
+          let mut pages = Vec::with_capacity(num_pages);
+          for page_idx in 0..num_pages {
+            if let Some(page) = doc.get_page(page_idx) {
+              if let Some(text) = page.get_text() {
+                pages.push(text.to_string());
+              }
+            }
           }
 
-          let pdf_chunker = PdfDocumentChunker::new(chunker.max_chunk_size, chunker.chunk_overlap);
-          let doc_chunks = pdf_chunker
-            .chunk_text_with_pages(&page_texts)
-            .map_err(|err| ChunkError::ParseError(format!("Failed to chunk PDF text: {err}")))?;
+          // Combine pages with separators for chunking
+          let mut full_text = String::new();
+          let mut page_boundaries = vec![0usize]; // Character positions where pages start
+
+          for (page_idx, page_text) in pages.iter().enumerate() {
+            if page_idx > 0 {
+              full_text.push_str("\n\n"); // Page separator
+            }
+            full_text.push_str(page_text);
+            page_boundaries.push(full_text.len());
+          }
+
+          // Use text-splitter for chunking
+          let config = ChunkConfig::new(max_chunk_size)
+            .with_sizer(&chunk_sizer)
+            .with_trim(false);
+          let splitter = TextSplitter::new(config);
+
+          let chunks: Vec<_> = splitter.chunks(&full_text).collect();
+
+          // Map chunks back to our format with position tracking
+          let mut doc_chunks = Vec::with_capacity(chunks.len());
+          let mut current_pos = 0usize;
+
+          for (idx, chunk_text) in chunks.iter().enumerate() {
+            let chunk_len = chunk_text.len();
+            let start_char = current_pos;
+            let end_char = current_pos + chunk_len;
+
+            // Determine which page this chunk belongs to
+            let mut page_num = 1;
+            for (i, &boundary) in page_boundaries.iter().enumerate() {
+              if start_char >= boundary {
+                page_num = i + 1;
+              } else {
+                break;
+              }
+            }
+
+            doc_chunks.push(PdfChunk {
+              content: chunk_text.to_string(),
+              start_char,
+              end_char,
+              page_num,
+              chunk_idx: idx,
+            });
+
+            // Apply overlap for next chunk position
+            if chunk_overlap > 0 && idx < chunks.len() - 1 {
+              // Move back by overlap amount (in characters)
+              let overlap_chars = chunk_overlap.min(chunk_len);
+              current_pos = end_char - overlap_chars;
+            } else {
+              current_pos = end_char;
+            }
+          }
 
           Ok::<_, ChunkError>(doc_chunks)
         }).await.map_err(|join_err| ChunkError::ParseError(format!("PDF extraction task failed: {join_err}")))??;
 
         let mut line_cursor = 1usize;
         let mut chunk_count = 0usize;
-        for (idx, doc_chunk) in extraction.into_iter().enumerate() {
+        for doc_chunk in extraction.into_iter() {
           if doc_chunk.content.trim().is_empty() {
             continue;
           }
@@ -109,15 +169,15 @@ impl Chunker for PdfChunker {
             ConcreteSizer::Characters(_) => None,
           };
 
-          let start_byte = doc_chunk.metadata.position.start_char;
-          let end_byte = doc_chunk.metadata.position.end_char;
+          let start_byte = doc_chunk.start_char;
+          let end_byte = doc_chunk.end_char;
           let start_line = line_cursor;
           let end_line = start_line + count_line_breaks(&content);
           line_cursor = end_line;
 
           let metadata = ChunkMetadata {
             node_type: "text_chunk".to_string(),
-            node_name: Some(format!("pdf_chunk_{}", idx + 1)),
+            node_name: Some(format!("pdf_chunk_{}", doc_chunk.chunk_idx + 1)),
             language: "pdf".to_string(),
             parent_context: Some(file_path.to_string_lossy().to_string()),
             scope_path: Vec::new(),
@@ -152,6 +212,15 @@ impl Chunker for PdfChunker {
         }
     })
   }
+}
+
+/// Internal struct to hold PDF chunk information
+struct PdfChunk {
+  content: String,
+  start_char: usize,
+  end_char: usize,
+  page_num: usize,
+  chunk_idx: usize,
 }
 
 #[cfg(test)]
@@ -230,7 +299,45 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn chunk_embedded_font_pdf_fixture() {
+    // Test with a PDF that has embedded fonts (Helvetica)
+    // This should always work regardless of system fonts
+    let chunker = PdfChunker::new(512, Tokenizer::Characters, 0).unwrap();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+      .join("fixtures")
+      .join("embedded_font_test.pdf");
+    let data = tokio::fs::read(&path).await.expect("read embedded font pdf fixture");
+
+    let reader = memory_async_reader(data.clone());
+    let peekable = PeekableReader::new(reader, 65536);
+    let detected = match chunker.applies(Path::new("fixture.pdf"), peekable).await {
+      Ok(peekable) => peekable,
+      Err(_) => panic!("expected PDF chunker to accept embedded font fixture"),
+    };
+
+    let mut stream = chunker
+      .chunk(Path::new("fixture.pdf"), Box::new(detected.into_async_read()))
+      .await;
+
+    let mut chunks = Vec::new();
+    while let Some(item) = stream.next().await {
+      let chunk = item.expect("pdf chunking should succeed");
+      if let Chunk::Text(sc) = chunk {
+        chunks.push(sc.text);
+      }
+    }
+
+    let has_keyword = chunks.iter().any(|text| text.contains("Oxidize-PDF"));
+    assert!(has_keyword, "PDF chunks should mention Oxidize-PDF; got {:?}", chunks);
+  }
+
+  #[tokio::test]
   async fn chunk_real_pdf_fixture() {
+    // This test uses a PDF with Identity-H font encoding (Arial Unicode MS)
+    // which triggers a known bug in oxidize-pdf that produces spaced characters.
+    // This is a real-world issue documented at:
+    // https://github.com/bzsanti/oxidizePdf/issues/116
+    // The test intentionally fails until the upstream bug is fixed.
     let chunker = PdfChunker::new(512, Tokenizer::Characters, 0).unwrap();
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
       .join("fixtures")
@@ -256,10 +363,7 @@ mod tests {
       }
     }
 
-    let has_keyword = chunks.iter().any(|text| {
-      let normalized = text.replace('\0', "");
-      normalized.contains("Oxidize-PDF")
-    });
+    let has_keyword = chunks.iter().any(|text| text.contains("Oxidize-PDF"));
     assert!(has_keyword, "PDF chunks should mention Oxidize-PDF; got {:?}", chunks);
   }
 }

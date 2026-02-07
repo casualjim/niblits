@@ -61,7 +61,7 @@ impl Chunker for CodeChunker {
       Ok((detection, peekable)) => {
         // Determine language from detection if supported
         let applies = detection.is_some_and(|d| {
-          let language = d.language();
+          let language = d.canonical();
           languages::get_language(language).is_some()
         });
         if applies { Ok(peekable) } else { Err(peekable) }
@@ -82,7 +82,7 @@ impl Chunker for CodeChunker {
           .map_err(|(err, _peekable)| err)?;
         let detection = detected
           .ok_or_else(|| ChunkError::UnsupportedLanguage("Unknown".to_string()))?;
-        let language_name = detection.language().to_string();
+        let language_name = detection.canonical().to_string();
 
         let language_fn = get_language(&language_name)
           .ok_or_else(|| ChunkError::UnsupportedLanguage(language_name.clone()))?;
@@ -583,7 +583,7 @@ fn helper() {
     assert!(result.is_err());
 
     match result {
-      Err(ChunkError::UnsupportedLanguage(lang)) => assert_eq!(lang, "COBOL"),
+      Err(ChunkError::UnsupportedLanguage(lang)) => assert_eq!(lang, "cobol"),
       _ => panic!("Expected UnsupportedLanguage error"),
     }
   }

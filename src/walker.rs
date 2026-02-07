@@ -259,7 +259,8 @@ pub fn process_supported_files(entry: &DirEntry) -> bool {
   }
 
   // If infer can't determine, check with palate
-  if !palate::detect(path).is_ok() {
+  // palate::try_detect returns Some if a file type is detected, None otherwise
+  if palate::try_detect(path, "").is_none() {
     debug!("Skipping binary file: {}", path.display());
     return false;
   }
@@ -302,7 +303,9 @@ fn is_text_file(path: &Path) -> bool {
   }
 
   // If infer can't determine, check with palate
-  palate::detect(path).is_ok()
+  // palate::try_detect returns Some(FileType) if it can detect, None otherwise
+  // Empty content is used for path-only detection
+  palate::try_detect(path, "").is_some()
 }
 
 fn configure_ignore_rules(builder: &mut WalkBuilder, max_file_size: Option<u64>, custom_ignore_filename: Option<&str>) {
@@ -851,13 +854,12 @@ fn process_file<P: AsRef<Path>>(
           };
 
           match detection {
-              Some(d) => {
-                  let language = d.language();
-                  let language_lower = language.to_ascii_lowercase();
-                  if language_lower == "markdown" {
+              Some(file_type) => {
+                  let language = file_type.canonical();
+                  if language == "markdown" {
                       "markdown".to_string()
                   } else if crate::languages::get_language(language).is_some() {
-                      language_lower
+                      language.to_string()
                   } else {
                       match inferred_mime {
                           Some(mime) if mime != "text/plain" => mime
