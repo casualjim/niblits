@@ -26,7 +26,8 @@ runs:
         $SUDO wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | $SUDO tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
         echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" | $SUDO tee /etc/apt/sources.list.d/llvm-21.list
         $SUDO apt-get update
-        $SUDO apt-get install -y mold libssl-dev pkg-config libc++-21-dev libc++abi-21-dev clang-21
+        $SUDO apt-get install -y mold libssl-dev pkg-config libc++-21-dev libc++abi-21-dev clang-21 \
+          libglib2.0-dev libpoppler-glib-dev
         ARCH=$(uname -m)
         echo "CXXFLAGS=-stdlib=libc++" >> $GITHUB_ENV
         echo "CC=clang-21" >> $GITHUB_ENV
