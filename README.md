@@ -150,7 +150,7 @@ Commonly supported languages include: Rust, Python, JavaScript, TypeScript, Go, 
 - `walk_project(path, options)` - Recursively walk a directory and stream chunks
 - `walk_files(files, project_root, options)` - Chunk a stream of file paths with ignore rules
 - `walker_includes_path(project_root, path, max_file_size)` - Check if a path would be included
-- `supported_languages()` - Get list of supported programming languages  
+- `supported_languages()` - Get list of supported programming languages
 - `is_language_supported(name)` - Check if a language is supported
 
 ### Types
@@ -170,7 +170,7 @@ let config = ChunkerConfig::default();
 let reader = Cursor::new("# Header\n\nSome content\n\n## Subheader").as_bytes();
 let stream = chunk_stream("doc.md", reader, config).await;
 
-// PDF file  
+// PDF file
 let file = tokio::fs::File::open("document.pdf").await?;
 let stream = chunk_stream("document.pdf", file, config).await;
 

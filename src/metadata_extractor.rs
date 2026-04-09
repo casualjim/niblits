@@ -28,8 +28,7 @@ pub fn extract_metadata_from_tree(
   let parent_context = extract_parent_context(&primary_node, content);
 
   // Extract definitions and references within the chunk.
-  let (definitions, references) =
-    extract_symbols_in_range(root_node, content, chunk_start, chunk_end);
+  let (definitions, references) = extract_symbols_in_range(root_node, content, chunk_start, chunk_end);
 
   Ok(ChunkMetadata {
     node_type,
@@ -78,12 +77,7 @@ fn find_primary_node_for_range(node: Node, start_byte: usize, end_byte: usize) -
   best_node
 }
 
-fn visit_node<'a>(
-  cursor: &mut TreeCursor<'a>,
-  best_node: &mut Node<'a>,
-  start_byte: usize,
-  end_byte: usize,
-) {
+fn visit_node<'a>(cursor: &mut TreeCursor<'a>, best_node: &mut Node<'a>, start_byte: usize, end_byte: usize) {
   let node = cursor.node();
 
   // Check if this node fully contains our range.
@@ -155,11 +149,9 @@ fn extract_node_name(node: &Node, content: &str) -> Option<String> {
       .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string()),
 
     // Interfaces and traits.
-    "interface_declaration" | "trait_item" | "trait_definition" => {
-      find_child_by_kind(node, "identifier")
-        .or_else(|| find_child_by_kind(node, "type_identifier"))
-        .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
-    }
+    "interface_declaration" | "trait_item" | "trait_definition" => find_child_by_kind(node, "identifier")
+      .or_else(|| find_child_by_kind(node, "type_identifier"))
+      .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string()),
 
     // Enums.
     "enum_declaration" | "enum_specifier" => find_child_by_kind(node, "identifier")
@@ -167,19 +159,19 @@ fn extract_node_name(node: &Node, content: &str) -> Option<String> {
       .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string()),
 
     // Structs.
-    "struct_item" | "struct_declaration" | "struct_specifier" => {
-      find_child_by_kind(node, "type_identifier")
-        .or_else(|| find_child_by_kind(node, "identifier"))
-        .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
-    }
+    "struct_item" | "struct_declaration" | "struct_specifier" => find_child_by_kind(node, "type_identifier")
+      .or_else(|| find_child_by_kind(node, "identifier"))
+      .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string()),
 
     // Constructors.
-    "constructor_declaration" => find_child_by_kind(node, "identifier")
-      .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string()),
+    "constructor_declaration" => {
+      find_child_by_kind(node, "identifier").map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
+    }
 
     // Properties.
-    "property_declaration" => find_child_by_kind(node, "identifier")
-      .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string()),
+    "property_declaration" => {
+      find_child_by_kind(node, "identifier").map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
+    }
 
     // Modules.
     "module" | "module_definition" => find_child_by_kind(node, "identifier")
@@ -189,12 +181,7 @@ fn extract_node_name(node: &Node, content: &str) -> Option<String> {
     // Rust-specific.
     "impl_item" => {
       if let Some(type_id) = find_child_by_kind(node, "type_identifier") {
-        Some(
-          type_id
-            .utf8_text(content.as_bytes())
-            .unwrap_or("")
-            .to_string(),
-        )
+        Some(type_id.utf8_text(content.as_bytes()).unwrap_or("").to_string())
       } else if let Some(generic_type) = find_child_by_kind(node, "generic_type") {
         find_child_by_kind(&generic_type, "type_identifier")
           .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
@@ -202,26 +189,22 @@ fn extract_node_name(node: &Node, content: &str) -> Option<String> {
         None
       }
     }
-    "enum_item" | "const_item" | "static_item" | "mod_item" => {
-      find_child_by_kind(node, "identifier")
-        .or_else(|| find_child_by_kind(node, "type_identifier"))
-        .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
-    }
-
-    // Language-specific function-like constructs.
-    "def" | "defn" | "defp" | "defmodule" | "defprotocol" => find_child_by_kind(node, "identifier")
+    "enum_item" | "const_item" | "static_item" | "mod_item" => find_child_by_kind(node, "identifier")
+      .or_else(|| find_child_by_kind(node, "type_identifier"))
       .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string()),
 
-    // Additional important block-level constructs.
-    "object_definition" | "object_declaration" => {
-      find_child_by_kind(node, "identifier")
-        .or_else(|| find_child_by_kind(node, "type_identifier"))
-        .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
+    // Language-specific function-like constructs.
+    "def" | "defn" | "defp" | "defmodule" | "defprotocol" => {
+      find_child_by_kind(node, "identifier").map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
     }
 
+    // Additional important block-level constructs.
+    "object_definition" | "object_declaration" => find_child_by_kind(node, "identifier")
+      .or_else(|| find_child_by_kind(node, "type_identifier"))
+      .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string()),
+
     "namespace_declaration" | "namespace_definition" => {
-      find_child_by_kind(node, "identifier")
-        .map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
+      find_child_by_kind(node, "identifier").map(|n| n.utf8_text(content.as_bytes()).unwrap_or("").to_string())
     }
 
     _ => None,
@@ -231,9 +214,7 @@ fn extract_node_name(node: &Node, content: &str) -> Option<String> {
 /// Find a child node by its kind.
 fn find_child_by_kind<'a>(node: &'a Node, kind: &str) -> Option<Node<'a>> {
   let mut cursor = node.walk();
-  node
-    .children(&mut cursor)
-    .find(|&child| child.kind() == kind)
+  node.children(&mut cursor).find(|&child| child.kind() == kind)
 }
 
 /// Build a scope path by traversing parent nodes.
@@ -382,8 +363,8 @@ fn extract_symbols_recursive(
     | "struct_declaration"
     | "struct_specifier"
     | "trait_definition" => {
-      if let Some(name_node) = find_child_by_kind(&node, "identifier")
-        .or_else(|| find_child_by_kind(&node, "type_identifier"))
+      if let Some(name_node) =
+        find_child_by_kind(&node, "identifier").or_else(|| find_child_by_kind(&node, "type_identifier"))
         && let Ok(text) = name_node.utf8_text(content.as_bytes())
       {
         definitions.push(text.to_string());
@@ -392,8 +373,8 @@ fn extract_symbols_recursive(
 
     // Enum definitions.
     "enum_declaration" | "enum_specifier" | "enum_item" => {
-      if let Some(name_node) = find_child_by_kind(&node, "identifier")
-        .or_else(|| find_child_by_kind(&node, "type_identifier"))
+      if let Some(name_node) =
+        find_child_by_kind(&node, "identifier").or_else(|| find_child_by_kind(&node, "type_identifier"))
         && let Ok(text) = name_node.utf8_text(content.as_bytes())
       {
         definitions.push(text.to_string());
@@ -439,8 +420,8 @@ fn extract_symbols_recursive(
 
     // Additional important definitions.
     "object_definition" | "object_declaration" => {
-      if let Some(name_node) = find_child_by_kind(&node, "identifier")
-        .or_else(|| find_child_by_kind(&node, "type_identifier"))
+      if let Some(name_node) =
+        find_child_by_kind(&node, "identifier").or_else(|| find_child_by_kind(&node, "type_identifier"))
         && let Ok(text) = name_node.utf8_text(content.as_bytes())
       {
         definitions.push(text.to_string());
@@ -469,14 +450,7 @@ fn extract_symbols_recursive(
 
   if cursor.goto_first_child() {
     loop {
-      extract_symbols_recursive(
-        cursor,
-        content,
-        start_byte,
-        end_byte,
-        definitions,
-        references,
-      );
+      extract_symbols_recursive(cursor, content, start_byte, end_byte, definitions, references);
       if !cursor.goto_next_sibling() {
         break;
       }
@@ -490,11 +464,7 @@ fn is_definition_context(node: &Node) -> bool {
   if let Some(parent) = node.parent() {
     matches!(
       parent.kind(),
-      "variable_declarator"
-        | "parameter"
-        | "formal_parameters"
-        | "pattern"
-        | "shorthand_property_identifier_pattern"
+      "variable_declarator" | "parameter" | "formal_parameters" | "pattern" | "shorthand_property_identifier_pattern"
     )
   } else {
     false

@@ -67,7 +67,7 @@ impl Chunker for PdfChunker {
         let max_chunk_size = chunker.max_chunk_size;
         let chunk_overlap = chunker.chunk_overlap;
         let chunk_sizer = chunker.chunk_sizer.clone();
-        
+
         let extraction = tokio::task::spawn_blocking(move || {
           // Extract text using poppler (system library) - handles Identity-H encoding correctly
           let doc = poppler::PopplerDocument::new_from_file(&temp_path, None)
@@ -81,23 +81,20 @@ impl Chunker for PdfChunker {
           // Extract text from each page
           let mut pages = Vec::with_capacity(num_pages);
           for page_idx in 0..num_pages {
-            if let Some(page) = doc.get_page(page_idx) {
-              if let Some(text) = page.get_text() {
+            if let Some(page) = doc.get_page(page_idx)
+              && let Some(text) = page.get_text() {
                 pages.push(text.to_string());
               }
-            }
           }
 
           // Combine pages with separators for chunking
           let mut full_text = String::new();
-          let mut page_boundaries = vec![0usize]; // Character positions where pages start
 
           for (page_idx, page_text) in pages.iter().enumerate() {
             if page_idx > 0 {
               full_text.push_str("\n\n"); // Page separator
             }
             full_text.push_str(page_text);
-            page_boundaries.push(full_text.len());
           }
 
           // Use text-splitter for chunking
@@ -117,21 +114,10 @@ impl Chunker for PdfChunker {
             let start_char = current_pos;
             let end_char = current_pos + chunk_len;
 
-            // Determine which page this chunk belongs to
-            let mut page_num = 1;
-            for (i, &boundary) in page_boundaries.iter().enumerate() {
-              if start_char >= boundary {
-                page_num = i + 1;
-              } else {
-                break;
-              }
-            }
-
             doc_chunks.push(PdfChunk {
               content: chunk_text.to_string(),
               start_char,
               end_char,
-              page_num,
               chunk_idx: idx,
             });
 
@@ -219,7 +205,6 @@ struct PdfChunk {
   content: String,
   start_char: usize,
   end_char: usize,
-  page_num: usize,
   chunk_idx: usize,
 }
 

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::{path::Path, pin::Pin};
 
 mod code;
@@ -24,8 +25,8 @@ use crate::{ChunkerConfig, Tokenizer, languages::*, types::*};
 #[derive(Clone)]
 pub enum ConcreteSizer {
   Characters(text_splitter::Characters),
-  Tiktoken(tiktoken_rs::CoreBPE),
-  HuggingFace(std::sync::Arc<tokenizers::tokenizer::Tokenizer>),
+  Tiktoken(Arc<tiktoken_rs::CoreBPE>),
+  HuggingFace(Arc<tokenizers::tokenizer::Tokenizer>),
 }
 
 impl ChunkSizer for ConcreteSizer {
@@ -59,15 +60,13 @@ impl TryFrom<Tokenizer> for ConcreteSizer {
           }
         }
         .map_err(|e| ChunkError::ParseError(format!("Failed to create tiktoken: {}", e)))?;
-        Ok(ConcreteSizer::Tiktoken(tiktoken))
+        Ok(ConcreteSizer::Tiktoken(Arc::new(tiktoken)))
       }
-      Tokenizer::PreloadedTiktoken(tiktoken) => Ok(ConcreteSizer::Tiktoken(
-        std::sync::Arc::try_unwrap(tiktoken).unwrap_or_else(|arc| (*arc).clone()),
-      )),
+      Tokenizer::PreloadedTiktoken(tiktoken) => Ok(ConcreteSizer::Tiktoken(tiktoken)),
       Tokenizer::HuggingFace(model) => {
         let tokenizer = tokenizers::tokenizer::Tokenizer::from_pretrained(&model, None)
           .map_err(|e| ChunkError::ParseError(format!("Failed to load HF tokenizer: {}", e)))?;
-        Ok(ConcreteSizer::HuggingFace(std::sync::Arc::new(tokenizer)))
+        Ok(ConcreteSizer::HuggingFace(Arc::new(tokenizer)))
       }
       Tokenizer::PreloadedHuggingFace(tokenizer) => Ok(ConcreteSizer::HuggingFace(tokenizer)),
     }

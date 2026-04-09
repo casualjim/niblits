@@ -30,11 +30,12 @@ futures = "0.3"
 htmd = "0.3.2"
 ignore = { version = "0.4", features = ["simd-accel"] }
 
-palate = "0.3.8"
 icu_segmenter = "2.1.2"
 infer = "0.19.0"
+palate = "0.3.8"
 secrecy = { version = "0.10.3", features = ["serde"] }
 
+poppler = "0.6.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tempfile = "3"
@@ -49,7 +50,6 @@ tracing = { version = "0.1.44" }
 tree-sitter = "0.25"
 tree-sitter-language = "0.1.7"
 typed-builder = "0.23.2"
-poppler = "0.6.0"
 
 [build-dependencies]
 serde = { version = "1.0.228", features = ["derive"] }

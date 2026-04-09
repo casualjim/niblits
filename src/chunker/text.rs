@@ -104,13 +104,12 @@ impl Chunker for TextChunker {
             let mut start_offset = offset;
             if chunker.chunk_overlap > 0 {
               let mut overlap_chars = chunker.chunk_overlap;
-              if let Some(prev_end) = prev_end_offset {
-                if offset < prev_end {
+              if let Some(prev_end) = prev_end_offset
+                && offset < prev_end {
                   let overlap_slice = &content[offset..prev_end];
                   let existing_overlap = overlap_slice.chars().count();
                   overlap_chars = overlap_chars.saturating_sub(existing_overlap);
                 }
-              }
               if overlap_chars > 0 {
                 start_offset = overlap_start_offset(&content, offset, overlap_chars);
               }
@@ -258,10 +257,7 @@ mod tests {
     let peekable = PeekableReader::new(reader, 8192);
 
     let result = chunker.applies(Path::new("data.bin"), peekable).await;
-    assert!(
-      result.is_err(),
-      "expected binary payload to be rejected by TextChunker"
-    );
+    assert!(result.is_err(), "expected binary payload to be rejected by TextChunker");
   }
 
   #[tokio::test]

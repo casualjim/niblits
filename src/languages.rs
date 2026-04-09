@@ -216,12 +216,12 @@ where
       return Err((e, content_reader));
     }
   };
-  
+
   let content = String::from_utf8_lossy(&content_bytes);
-  
+
   // Use palate's try_detect which handles all detection logic internally
   let file_type = palate::try_detect(path, &content);
-  
+
   Ok((file_type, content_reader))
 }
 

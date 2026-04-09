@@ -49,9 +49,7 @@ fn get_target_parser_path() -> Result<PathBuf, String> {
     "x86_64-unknown-linux-gnu" => "@kumos/tree-sitter-parsers-linux-x64",
     "aarch64-unknown-linux-musl" => "@kumos/tree-sitter-parsers-linux-arm64-musl",
     "x86_64-unknown-linux-musl" => "@kumos/tree-sitter-parsers-linux-x64-musl",
-    "aarch64-pc-windows-msvc" | "aarch64-pc-windows-gnu" => {
-      "@kumos/tree-sitter-parsers-win32-arm64"
-    }
+    "aarch64-pc-windows-msvc" | "aarch64-pc-windows-gnu" => "@kumos/tree-sitter-parsers-win32-arm64",
     "x86_64-pc-windows-msvc" | "x86_64-pc-windows-gnu" => "@kumos/tree-sitter-parsers-win32-x64",
     _ => {
       // For unknown targets, try to use npx which will auto-install if needed
@@ -76,14 +74,9 @@ fn get_target_parser_path() -> Result<PathBuf, String> {
           "aarch64-unknown-linux-musl" => "libtree-sitter-parsers-all-linux-aarch64-musl.a",
           "x86_64-unknown-linux-musl" => "libtree-sitter-parsers-all-linux-x86_64-musl.a",
           "aarch64-pc-windows-msvc" => "libtree-sitter-parsers-all-windows-aarch64.a",
-          "x86_64-pc-windows-msvc" | "x86_64-pc-windows-gnu" => {
-            "libtree-sitter-parsers-all-windows-x86_64.a"
-          }
+          "x86_64-pc-windows-msvc" | "x86_64-pc-windows-gnu" => "libtree-sitter-parsers-all-windows-x86_64.a",
           _ => {
-            return Err(format!(
-              "No parser library found in package: {}",
-              npm_package
-            ));
+            return Err(format!("No parser library found in package: {}", npm_package));
           }
         };
 
@@ -140,12 +133,7 @@ fn get_npm_parser_path() -> Result<PathBuf, String> {
     .arg("--yes") // Automatically install if not present
     .arg("@kumos/tree-sitter-parsers@latest")
     .output()
-    .map_err(|e| {
-      format!(
-        "Failed to run npx: {}. Make sure Node.js and npm are installed.",
-        e
-      )
-    })?;
+    .map_err(|e| format!("Failed to run npx: {}. Make sure Node.js and npm are installed.", e))?;
 
   if !output.status.success() {
     return Err(format!(
@@ -170,13 +158,10 @@ fn main() {
   let out_path = Path::new(&out_dir);
 
   // Get target-specific parsers
-  let parser_lib_path = get_target_parser_path()
-    .expect("Failed to get npm parsers. Make sure Node.js and npm are installed.");
+  let parser_lib_path =
+    get_target_parser_path().expect("Failed to get npm parsers. Make sure Node.js and npm are installed.");
 
-  eprintln!(
-    "Using tree-sitter parsers from {}",
-    parser_lib_path.display()
-  );
+  eprintln!("Using tree-sitter parsers from {}", parser_lib_path.display());
 
   use_npm_parsers(&parser_lib_path, out_path);
 }
@@ -225,8 +210,7 @@ fn use_npm_parsers(parser_lib_path: &Path, out_path: &Path) {
   if metadata_path.exists() {
     eprintln!("Found grammar metadata at: {}", metadata_path.display());
     let metadata_str = fs::read_to_string(&metadata_path).expect("Failed to read grammar metadata");
-    let grammars: Vec<Grammar> =
-      serde_json::from_str(&metadata_str).expect("Failed to parse grammar metadata");
+    let grammars: Vec<Grammar> = serde_json::from_str(&metadata_str).expect("Failed to parse grammar metadata");
     generate_bindings(out_path, &grammars);
   } else {
     panic!("No grammar metadata found. The npm package must provide a grammars-*.json file.");

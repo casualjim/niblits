@@ -32,11 +32,7 @@ impl MarkdownChunker {
     }
   }
 
-  fn chunk_markdown_content(
-    &self,
-    content: &str,
-    file_path: Option<&Path>,
-  ) -> Result<Vec<SemanticChunk>, ChunkError> {
+  fn chunk_markdown_content(&self, content: &str, file_path: Option<&Path>) -> Result<Vec<SemanticChunk>, ChunkError> {
     if content.trim().is_empty() {
       return Ok(Vec::new());
     }
@@ -82,14 +78,7 @@ impl MarkdownChunker {
       };
       chunks.push(SemanticChunk {
         metadata,
-        ..SemanticChunk::with_line_numbers(
-          chunk.to_string(),
-          tokens,
-          start_byte,
-          end_byte,
-          start_line,
-          end_line,
-        )
+        ..SemanticChunk::with_line_numbers(chunk.to_string(), tokens, start_byte, end_byte, start_line, end_line)
       });
     }
 

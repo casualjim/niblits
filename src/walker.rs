@@ -567,12 +567,8 @@ async fn collect_files_with_sizes(
     let _ = tx.send(Ok(entries));
   });
 
-  rx.await.unwrap_or_else(|_| {
-    Err(std::io::Error::new(
-      std::io::ErrorKind::Other,
-      "collector thread failed",
-    ))
-  })
+  rx.await
+    .unwrap_or_else(|_| Err(std::io::Error::other("collector thread failed")))
 }
 
 /// Process files using dual-pool work-stealing approach
@@ -1405,12 +1401,7 @@ fn helper() {
     fs::write(&rust_file, content).unwrap();
 
     let file_size = fs::metadata(&rust_file).unwrap().len();
-    let mut stream = Box::pin(process_file(
-      &rust_file,
-      file_size,
-      ChunkerConfig::default(),
-      None,
-    ));
+    let mut stream = Box::pin(process_file(&rust_file, file_size, ChunkerConfig::default(), None));
 
     let mut chunks = Vec::new();
     while let Some(result) = stream.next().await {
@@ -1468,12 +1459,7 @@ fn main() {
 
     // First, process the file without any existing hashes
     let file_size = fs::metadata(&test_file).unwrap().len();
-    let mut stream = Box::pin(process_file(
-      &test_file,
-      file_size,
-      ChunkerConfig::default(),
-      None,
-    ));
+    let mut stream = Box::pin(process_file(&test_file, file_size, ChunkerConfig::default(), None));
 
     let mut chunks = Vec::new();
     while let Some(result) = stream.next().await {
@@ -1634,8 +1620,10 @@ fn main() {
     existing_hashes.insert(file_path.clone(), hash_bytes);
 
     let files = tokio_stream::iter(vec![file_path.clone()]);
-    let mut options = WalkOptions::default();
-    options.existing_hashes = existing_hashes;
+    let options = WalkOptions {
+      existing_hashes,
+      ..WalkOptions::default()
+    };
 
     let mut stream = walk_files(files, temp_dir.path(), options);
     let mut saw_delete = false;

@@ -22,8 +22,7 @@ use tokio::io::{AsyncRead, ReadBuf};
 use crate::chunker::{get_chunker, get_chunker_with_overrides};
 // Re-export main types
 pub use crate::types::{
-  Chunk, ChunkError, ChunkMetadata, FileMetadata, FileSymbols, OutlineUnit, ProjectChunk,
-  SemanticChunk,
+  Chunk, ChunkError, ChunkMetadata, FileMetadata, FileSymbols, OutlineUnit, ProjectChunk, SemanticChunk,
 };
 pub use crate::walker::{
   EntryFilter, WalkOptions, is_ignored_path, is_included_path, process_supported_files, process_text_files_only,
@@ -63,6 +62,43 @@ impl Tokenizer {
       self,
       Tokenizer::PreloadedTiktoken(_) | Tokenizer::PreloadedHuggingFace(_)
     )
+  }
+
+  /// Count tokens for the provided text using this tokenizer.
+  pub fn count_tokens(&self, text: &str) -> Result<usize, ChunkError> {
+    match self {
+      Tokenizer::Characters => Ok(text.chars().count()),
+      Tokenizer::Tiktoken(encoding) => {
+        let bpe = match encoding.as_str() {
+          "cl100k_base" => tiktoken_rs::cl100k_base(),
+          "p50k_base" => tiktoken_rs::p50k_base(),
+          "p50k_edit" => tiktoken_rs::p50k_edit(),
+          "r50k_base" => tiktoken_rs::r50k_base(),
+          "o200k_base" => tiktoken_rs::o200k_base(),
+          _ => {
+            return Err(ChunkError::ParseError(format!(
+              "Unknown tiktoken encoding: {}",
+              encoding
+            )));
+          }
+        };
+        let bpe = bpe.map_err(|e| ChunkError::ParseError(format!("Failed to create tiktoken: {e}")))?;
+        Ok(bpe.encode_ordinary(text).len())
+      }
+      Tokenizer::PreloadedTiktoken(bpe) => Ok(bpe.encode_ordinary(text).len()),
+      Tokenizer::HuggingFace(model_id) => {
+        let tokenizer = tokenizers::tokenizer::Tokenizer::from_pretrained(model_id, None)
+          .map_err(|e| ChunkError::ParseError(format!("Failed to load HF tokenizer: {}", e)))?;
+        tokenizer
+          .encode(text, false)
+          .map(|encoding| encoding.len())
+          .map_err(|e| ChunkError::ParseError(format!("Failed to encode with HF tokenizer: {}", e)))
+      }
+      Tokenizer::PreloadedHuggingFace(tokenizer) => tokenizer
+        .encode(text, false)
+        .map(|encoding| encoding.len())
+        .map_err(|e| ChunkError::ParseError(format!("Failed to encode with HF tokenizer: {}", e))),
+    }
   }
 
   pub fn preload(self) -> Result<Self, ChunkError> {
@@ -541,10 +577,6 @@ mod tests {
 
     let mut stream = Box::pin(chunk_stream(path, reader, cfg).await);
     let first = stream.next().await.expect("stream should yield an item");
-    assert!(
-      first.is_err(),
-      "expected overlap > 1.0 to be rejected, got {:?}",
-      first
-    );
+    assert!(first.is_err(), "expected overlap > 1.0 to be rejected, got {:?}", first);
   }
 }
