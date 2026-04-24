@@ -3,6 +3,7 @@ use std::{path::Path, pin::Pin};
 
 mod code;
 mod docx;
+mod docx_parser;
 mod html;
 mod markdown;
 mod pdf;

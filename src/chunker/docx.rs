@@ -2,10 +2,10 @@ use std::io::Write;
 use std::panic;
 use std::path::Path;
 
+use super::docx_parser::MarkdownDocument;
 use super::{ChunkStream, Chunker, ConcreteSizer, MarkdownChunker};
 use crate::{Tokenizer, languages::PeekableReader, types::*};
 use async_trait::async_trait;
-use docx_parser::MarkdownDocument;
 use tempfile::NamedTempFile;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
