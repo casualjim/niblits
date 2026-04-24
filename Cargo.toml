@@ -21,33 +21,33 @@ pre-release-commit-message = "Release {{version}} [ci skip]"
 async-stream = "0.3.6"
 async-tempfile = "0.7"
 async-trait = "0.1"
+base64 = "0.22"
 blake3 = "1"
 
-docx-parser = "0.1.1"
-docx-rust = "=0.1.8"
+docx-rust = "0.1"
 eyre = "0.6"
 futures = "0.3"
-htmd = "0.3.2"
+htmd = "0.5.4"
 ignore = { version = "0.4", features = ["simd-accel"] }
 
-icu_segmenter = "2.1.2"
+icu_segmenter = "2.2.0"
 infer = "0.19.0"
-palate = "0.3.8"
+palate = "0.3.9"
 secrecy = { version = "0.10.3", features = ["serde"] }
 
 poppler = "0.6.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tempfile = "3"
-text-splitter = { version = "0.28", features = ["code", "tiktoken-rs", "tokenizers", "markdown"] }
+text-splitter = { version = "0.30.1", features = ["code", "tiktoken-rs", "tokenizers", "markdown"] }
 thiserror = "2.0.18"
-tiktoken-rs = "0.7"
+tiktoken-rs = "0.11.0"
 tokenizers = { version = "0.22.2", default-features = false, features = ["esaxx_fast", "http", "onig"] }
 tokio = { version = "1", features = ["fs", "io-util"] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io", "io-util"] }
 tracing = { version = "0.1.44" }
-tree-sitter = "0.25"
+tree-sitter = "0.26.8"
 tree-sitter-language = "0.1.7"
 typed-builder = "0.23.2"
 
