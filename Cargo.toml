@@ -1,6 +1,6 @@
 [package]
 name = "niblits"
-version = "0.3.10"
+version = "0.3.11"
 edition = "2024"
 description = "Token-aware, multi-format text chunking library with language-aware semantic splitting"
 authors = ["Slipstream Team"]
