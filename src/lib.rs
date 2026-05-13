@@ -26,7 +26,7 @@ pub use crate::types::{
 };
 pub use crate::walker::{
   EntryFilter, WalkOptions, is_ignored_path, is_included_path, process_supported_files, process_text_files_only,
-  walk_files, walk_project,
+  project_walk_builder, walk_files, walk_project,
 };
 pub use chunker::ChunkerOverrides;
 

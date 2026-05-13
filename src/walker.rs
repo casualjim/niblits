@@ -89,6 +89,22 @@ impl Default for WalkOptions {
   }
 }
 
+/// Build an ignore walker with the same project ignore rules used by `walk_project`.
+pub fn project_walk_builder(path: impl AsRef<Path>, options: &WalkOptions) -> WalkBuilder {
+  let mut builder = WalkBuilder::new(path);
+
+  configure_ignore_rules(
+    &mut builder,
+    options.max_file_size,
+    options.custom_ignore_filename.as_deref(),
+  );
+
+  let entry_filter = options.entry_filter.clone();
+  builder.filter_entry(move |entry| should_process_entry(entry, entry_filter.as_ref()));
+
+  builder
+}
+
 /// Walk a project directory with options
 pub fn walk_project(
   path: impl AsRef<Path>,
@@ -1217,6 +1233,27 @@ python -m pytest tests/
 
     let src_file = path.join("src/calculator.py");
     assert!(!is_ignored_path(path, &src_file, &options));
+  }
+
+  #[tokio::test]
+  async fn test_project_walk_builder_uses_project_ignore_rules() {
+    let temp_dir = create_test_project().await;
+    let path = temp_dir.path();
+    let options = WalkOptions {
+      custom_ignore_filename: Some(".appignore".to_string()),
+      ..WalkOptions::default()
+    };
+
+    let files: Vec<_> = project_walk_builder(path, &options)
+      .build()
+      .flatten()
+      .filter(|entry| entry.file_type().is_some_and(|ft| ft.is_file()))
+      .map(|entry| entry.path().to_owned())
+      .collect();
+
+    assert!(files.iter().any(|file| file.ends_with("src/calculator.py")));
+    assert!(!files.iter().any(|file| file.ends_with(".git/config")));
+    assert!(!files.iter().any(|file| file.ends_with("scripts/test.py")));
   }
 
   #[tokio::test]
