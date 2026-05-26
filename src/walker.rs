@@ -411,11 +411,14 @@ fn is_included_path_with_ignore_filename(
   configure_ignore_rules(&mut builder, max_file_size, custom_ignore_filename);
   builder.overrides(overrides);
 
+  let traversal_entry_filter = entry_filter.cloned();
+  builder.filter_entry(move |entry| should_process_entry(entry, traversal_entry_filter.as_ref()));
+
   // Build the iterator and check whether our file appears
   for ent in builder.build().flatten() {
     let p = ent.path();
     if p == path {
-      // Only include files; directories are always traversable in walker
+      // Only include files; directory entries are traversal-only.
       if let Some(ft) = ent.file_type() {
         if !ft.is_file() {
           return false;
@@ -565,13 +568,15 @@ async fn collect_files_with_sizes(
 
     configure_ignore_rules(&mut builder, max_file_size, custom_ignore_filename.as_deref());
 
-    // Filter entries using the same logic we use downstream (no binary/empty files)
-    let entry_filter = entry_filter.clone();
-    builder.filter_entry(move |entry| should_process_entry(entry, entry_filter.as_ref()));
+    // Filter entries for traversal, then apply the same predicate again before
+    // collecting files because filter_entry is primarily a traversal/pruning hook.
+    let traversal_entry_filter = entry_filter.clone();
+    builder.filter_entry(move |entry| should_process_entry(entry, traversal_entry_filter.as_ref()));
 
     for entry in builder.build().flatten() {
       if let Some(file_type) = entry.file_type()
         && file_type.is_file()
+        && should_process_entry(&entry, entry_filter.as_ref())
         && let Ok(metadata) = entry.metadata()
       {
         let size = metadata.len();
@@ -1233,6 +1238,49 @@ python -m pytest tests/
 
     let src_file = path.join("src/calculator.py");
     assert!(!is_ignored_path(path, &src_file, &options));
+  }
+
+  #[tokio::test]
+  async fn test_walk_project_entry_filter_excludes_files() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path();
+    fs::create_dir_all(path.join("src")).unwrap();
+
+    let readme = path.join("README.md");
+    let rust_file = path.join("src/lib.rs");
+    fs::write(&readme, "# Test Project\n\nOnly markdown should be chunked.\n").unwrap();
+    fs::write(&rust_file, "pub fn should_not_be_chunked() {}\n").unwrap();
+
+    let entry_filter: EntryFilter = Arc::new(|entry| {
+      entry.file_type().is_some_and(|ft| ft.is_dir())
+        || entry
+          .path()
+          .extension()
+          .and_then(|extension| extension.to_str())
+          .is_some_and(|extension| extension == "md")
+    });
+    let options = WalkOptions {
+      entry_filter: Some(entry_filter),
+      ..WalkOptions::default()
+    };
+
+    assert!(!is_ignored_path(path, &readme, &options));
+    assert!(is_ignored_path(path, &rust_file, &options));
+
+    let mut emitted_paths = BTreeSet::new();
+    let mut stream = walk_project(path, options);
+    while let Some(result) = stream.next().await {
+      emitted_paths.insert(result.unwrap().file_path);
+    }
+
+    assert!(
+      emitted_paths.iter().any(|file_path| file_path.ends_with("README.md")),
+      "expected README.md to be chunked; emitted paths: {emitted_paths:?}"
+    );
+    assert!(
+      !emitted_paths.iter().any(|file_path| file_path.ends_with("src/lib.rs")),
+      "expected src/lib.rs to be excluded; emitted paths: {emitted_paths:?}"
+    );
   }
 
   #[tokio::test]
