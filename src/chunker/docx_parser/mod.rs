@@ -238,8 +238,8 @@ impl TextBlock {
   pub fn to_markdown(&self, paragraph_style: &ParagraphStyle) -> String {
     let mut markdown = self.text.clone();
 
-    let mut style = if self.style.is_some() {
-      self.style.as_ref().unwrap().clone()
+    let mut style = if let Some(style) = &self.style {
+      style.clone()
     } else {
       BlockStyle::new()
     };
@@ -287,8 +287,8 @@ impl MarkdownParagraph {
   ) -> String {
     let mut markdown = String::new();
 
-    let mut style = if self.style.is_some() {
-      self.style.as_ref().unwrap().clone()
+    let mut style = if let Some(style) = &self.style {
+      style.clone()
     } else {
       ParagraphStyle::default()
     };
@@ -601,10 +601,7 @@ impl MarkdownDocument {
             .iter()
             .map(|row| {
               let is_header = match &row.property.table_header {
-                Some(table_header) => match table_header.value {
-                  Some(OnOffOnlyType::On) => true,
-                  _ => false,
-                },
+                Some(table_header) => matches!(table_header.value, Some(OnOffOnlyType::On)),
                 None => false,
               };
               let cells: Vec<Vec<MarkdownParagraph>> = row
@@ -615,10 +612,8 @@ impl MarkdownDocument {
                     let cells: Vec<MarkdownParagraph> = cell
                       .content
                       .iter()
-                      .filter_map(|content| match content {
-                        TableCellContent::Paragraph(paragraph) => {
-                          Some(MarkdownParagraph::from_paragraph(paragraph, &docx))
-                        }
+                      .map(|content| match content {
+                        TableCellContent::Paragraph(paragraph) => MarkdownParagraph::from_paragraph(paragraph, &docx),
                       })
                       .collect();
                     if !cells.is_empty() { Some(cells) } else { None }
@@ -686,7 +681,7 @@ impl MarkdownDocument {
           let column_lengths = max_lengths_per_column(&table_with_simple_cells, 3);
           let divider = &table_row_to_markdown(
             &column_lengths,
-            &column_lengths.iter().map(|i| "-".repeat(*i)).collect(),
+            &column_lengths.iter().map(|i| "-".repeat(*i)).collect::<Vec<_>>(),
           );
           let table =
             &table_with_simple_cells
@@ -701,7 +696,7 @@ impl MarkdownDocument {
                   } else {
                     acc.push_str(&table_row_to_markdown(
                       &column_lengths,
-                      &column_lengths.iter().map(|_| String::new()).collect(),
+                      &column_lengths.iter().map(|_| String::new()).collect::<Vec<_>>(),
                     ));
                     acc.push_str(divider);
                     acc.push_str(markdown_row);

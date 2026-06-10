@@ -42,7 +42,7 @@ pub fn pad_left(s: &str, width: &usize) -> String {
   padded
 }
 
-pub fn table_row_to_markdown(column_lengths: &Vec<usize>, row: &Vec<String>) -> String {
+pub fn table_row_to_markdown(column_lengths: &[usize], row: &[String]) -> String {
   let mut table_row_in_markdown = String::new();
   column_lengths.iter().enumerate().for_each(|(j, width)| {
     let cell = if j < row.len() { &row[j] } else { "" };
