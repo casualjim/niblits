@@ -388,6 +388,43 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn chunk_stream_reads_real_tokio_file_after_detection_peek() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let file_path = tempdir.path().join("main.rs");
+    let content = r#"fn main() {
+    println!("Hello, world!");
+}
+"#;
+    tokio::fs::write(&file_path, content)
+      .await
+      .expect("source file should be written");
+
+    let file = tokio::fs::File::open(&file_path)
+      .await
+      .expect("source file should be opened");
+    let cfg = ChunkerConfig {
+      max_chunk_size: 64,
+      tokenizer: Tokenizer::Characters,
+      overlap_percentage: 0.0,
+    };
+    let mut stream = Box::pin(chunk_stream("main.rs", file, cfg).await);
+
+    let mut semantic_count = 0usize;
+    while let Some(item) = stream.next().await {
+      let item = item.expect("stream should yield Ok(ProjectChunk)");
+      if let Chunk::Semantic(chunk) = item.chunk {
+        semantic_count += 1;
+        assert!(chunk.text.contains("fn main"));
+      }
+    }
+
+    assert!(
+      semantic_count > 0,
+      "tokio file source should produce semantic code chunks"
+    );
+  }
+
+  #[tokio::test]
   async fn test_process_file_text_fallback() {
     let content = "lorem ipsum dolor sit amet, consectetur adipiscing elit.\n".repeat(10);
     let path = Path::new("notes.txt");

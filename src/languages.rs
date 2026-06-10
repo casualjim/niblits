@@ -137,16 +137,17 @@ impl<R: AsyncRead + Unpin> AsyncRead for CombinedReader<R> {
     cx: &mut std::task::Context<'_>,
     buf: &mut tokio::io::ReadBuf<'_>,
   ) -> std::task::Poll<std::io::Result<()>> {
-    // First read from buffer if available
+    // First read from buffer if available. Once bytes are written to `buf`,
+    // return immediately instead of polling the inner reader in the same call:
+    // an inner reader may return `Pending`, and `AsyncRead` callers must still
+    // observe the buffered progress as `Ready`.
     if self.position < self.buffer.len() {
       let remaining_buffer = &self.buffer[self.position..];
       let to_read = buf.remaining().min(remaining_buffer.len());
       buf.put_slice(&remaining_buffer[..to_read]);
       self.position += to_read;
 
-      if buf.remaining() == 0 {
-        return std::task::Poll::Ready(Ok(()));
-      }
+      return std::task::Poll::Ready(Ok(()));
     }
 
     if self.position >= self.buffer.len() && !self.buffer.is_empty() {
@@ -334,6 +335,28 @@ mod tests {
     combined.read_exact(&mut out).await.unwrap();
 
     assert_eq!(std::str::from_utf8(&out).unwrap(), "hello world");
+  }
+
+  struct PendingReader;
+
+  impl AsyncRead for PendingReader {
+    fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, _buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+      Poll::Pending
+    }
+  }
+
+  #[test]
+  fn test_combined_reader_returns_ready_after_buffered_progress() {
+    let mut combined = CombinedReader::new(b"hello".to_vec(), PendingReader);
+    let mut out = [0u8; 16];
+    let mut read_buf = ReadBuf::new(&mut out);
+    let waker = futures::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    let poll = Pin::new(&mut combined).poll_read(&mut cx, &mut read_buf);
+
+    assert!(matches!(poll, Poll::Ready(Ok(()))));
+    assert_eq!(read_buf.filled(), b"hello");
   }
 
   #[tokio::test]
