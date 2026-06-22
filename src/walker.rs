@@ -48,6 +48,8 @@ pub struct WalkOptions {
   pub large_file_threads: usize,
   pub existing_hashes: std::collections::BTreeMap<PathBuf, [u8; 32]>,
   pub cancel_token: Option<CancellationToken>,
+  /// Whether to include hidden files and directories. Defaults to false.
+  pub include_hidden: bool,
   /// Application-specific ignore filename. Set to None to disable.
   pub custom_ignore_filename: Option<String>,
   /// Custom predicate for entry filtering. Overrides the default decision when provided.
@@ -65,6 +67,7 @@ impl std::fmt::Debug for WalkOptions {
       .field("large_file_threads", &self.large_file_threads)
       .field("existing_hashes", &self.existing_hashes)
       .field("cancel_token", &self.cancel_token)
+      .field("include_hidden", &self.include_hidden)
       .field("custom_ignore_filename", &self.custom_ignore_filename)
       .field("entry_filter", &self.entry_filter.as_ref().map(|_| "custom"))
       .finish()
@@ -83,6 +86,7 @@ impl Default for WalkOptions {
       large_file_threads: 4,
       existing_hashes: std::collections::BTreeMap::new(),
       cancel_token: None,
+      include_hidden: false,
       custom_ignore_filename: None,
       entry_filter: None,
     }
@@ -96,6 +100,7 @@ pub fn project_walk_builder(path: impl AsRef<Path>, options: &WalkOptions) -> Wa
   configure_ignore_rules(
     &mut builder,
     options.max_file_size,
+    options.include_hidden,
     options.custom_ignore_filename.as_deref(),
   );
 
@@ -129,6 +134,7 @@ fn walk_project_inner(
     let file_entries = match collect_files_with_sizes(
       &path,
       max_file_size,
+      options.include_hidden,
       options.custom_ignore_filename.clone(),
       options.entry_filter.clone(),
     )
@@ -324,13 +330,19 @@ fn is_text_file(path: &Path) -> bool {
   palate::try_detect(path, "").is_some()
 }
 
-fn configure_ignore_rules(builder: &mut WalkBuilder, max_file_size: Option<u64>, custom_ignore_filename: Option<&str>) {
+fn configure_ignore_rules(
+  builder: &mut WalkBuilder,
+  max_file_size: Option<u64>,
+  include_hidden: bool,
+  custom_ignore_filename: Option<&str>,
+) {
   // Add our default ignore patterns
   let default_ignore = get_default_ignore_file();
   if default_ignore.exists() {
     builder.add_ignore(default_ignore);
   }
 
+  builder.hidden(!include_hidden);
   builder.max_filesize(max_file_size);
 
   if let Some(custom_ignore_filename) = custom_ignore_filename {
@@ -341,7 +353,7 @@ fn configure_ignore_rules(builder: &mut WalkBuilder, max_file_size: Option<u64>,
 /// Decide if a single path would be included by the walker, using the same
 /// ignore/VCS pruning semantics. This is intended for file watcher events.
 pub fn is_included_path(project_root: impl AsRef<Path>, path: impl AsRef<Path>, max_file_size: Option<u64>) -> bool {
-  is_included_path_with_ignore_filename(project_root, path, max_file_size, None, None)
+  is_included_path_with_ignore_filename(project_root, path, max_file_size, false, None, None)
 }
 
 /// Decide if a single path would be included by the walker, using the same
@@ -355,6 +367,7 @@ fn is_included_path_with_options(
     project_root,
     path,
     options.max_file_size,
+    options.include_hidden,
     options.custom_ignore_filename.as_deref(),
     options.entry_filter.as_ref(),
   )
@@ -367,6 +380,7 @@ pub fn is_ignored_path(project_root: impl AsRef<Path>, path: impl AsRef<Path>, o
     project_root,
     path,
     options.max_file_size,
+    options.include_hidden,
     options.custom_ignore_filename.as_deref(),
     options.entry_filter.as_ref(),
   )
@@ -376,6 +390,7 @@ fn is_included_path_with_ignore_filename(
   project_root: impl AsRef<Path>,
   path: impl AsRef<Path>,
   max_file_size: Option<u64>,
+  include_hidden: bool,
   custom_ignore_filename: Option<&str>,
   entry_filter: Option<&EntryFilter>,
 ) -> bool {
@@ -408,7 +423,7 @@ fn is_included_path_with_ignore_filename(
   let mut builder = WalkBuilder::new(project_root);
 
   // Default and custom ignores, matching walk_project
-  configure_ignore_rules(&mut builder, max_file_size, custom_ignore_filename);
+  configure_ignore_rules(&mut builder, max_file_size, include_hidden, custom_ignore_filename);
   builder.overrides(overrides);
 
   let traversal_entry_filter = entry_filter.cloned();
@@ -421,6 +436,15 @@ fn is_included_path_with_ignore_filename(
       // Only include files; directory entries are traversal-only.
       if let Some(ft) = ent.file_type() {
         if !ft.is_file() {
+          return false;
+        }
+        // The override whitelist matches before the walker's hidden() filter,
+        // so honor include_hidden manually using the relative path.
+        if !include_hidden
+          && candidate
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().starts_with('.'))
+        {
           return false;
         }
         return should_process_entry(&ent, entry_filter);
@@ -555,6 +579,7 @@ where
 async fn collect_files_with_sizes(
   path: &Path,
   max_file_size: Option<u64>,
+  include_hidden: bool,
   custom_ignore_filename: Option<String>,
   entry_filter: Option<EntryFilter>,
 ) -> Result<Vec<(PathBuf, u64)>, std::io::Error> {
@@ -566,7 +591,12 @@ async fn collect_files_with_sizes(
     let mut entries = Vec::new();
     let mut builder = WalkBuilder::new(&path);
 
-    configure_ignore_rules(&mut builder, max_file_size, custom_ignore_filename.as_deref());
+    configure_ignore_rules(
+      &mut builder,
+      max_file_size,
+      include_hidden,
+      custom_ignore_filename.as_deref(),
+    );
 
     // Filter entries for traversal, then apply the same predicate again before
     // collecting files because filter_entry is primarily a traversal/pruning hook.
@@ -1182,6 +1212,7 @@ python -m pytest tests/
         large_file_threads: 2,
         existing_hashes: std::collections::BTreeMap::new(),
         cancel_token: None,
+        include_hidden: false,
         custom_ignore_filename: None,
         entry_filter: None,
       },
@@ -1238,6 +1269,105 @@ python -m pytest tests/
 
     let src_file = path.join("src/calculator.py");
     assert!(!is_ignored_path(path, &src_file, &options));
+  }
+
+  #[tokio::test]
+  async fn test_walk_project_hidden_files_are_excluded_by_default() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path();
+    fs::create_dir_all(path.join(".hidden_dir")).unwrap();
+    fs::write(path.join(".hidden.md"), "# Hidden\n").unwrap();
+    fs::write(path.join(".hidden_dir/nested.md"), "# Nested hidden\n").unwrap();
+
+    let mut emitted_paths = BTreeSet::new();
+    let mut stream = walk_project(path, WalkOptions::default());
+    while let Some(result) = stream.next().await {
+      emitted_paths.insert(result.unwrap().file_path);
+    }
+
+    assert!(
+      !emitted_paths.iter().any(|file_path| file_path.ends_with(".hidden.md")),
+      "expected hidden file to be excluded by default; emitted paths: {emitted_paths:?}"
+    );
+    assert!(
+      !emitted_paths
+        .iter()
+        .any(|file_path| file_path.ends_with(".hidden_dir/nested.md")),
+      "expected file in hidden directory to be excluded by default; emitted paths: {emitted_paths:?}"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_walk_project_include_hidden_walks_hidden_files_and_directories() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path();
+    fs::create_dir_all(path.join(".hidden_dir")).unwrap();
+    fs::write(path.join(".hidden.md"), "# Hidden\n").unwrap();
+    fs::write(path.join(".hidden_dir/nested.md"), "# Nested hidden\n").unwrap();
+
+    let mut emitted_paths = BTreeSet::new();
+    let mut stream = walk_project(
+      path,
+      WalkOptions {
+        include_hidden: true,
+        ..WalkOptions::default()
+      },
+    );
+    while let Some(result) = stream.next().await {
+      emitted_paths.insert(result.unwrap().file_path);
+    }
+
+    assert!(
+      emitted_paths.iter().any(|file_path| file_path.ends_with(".hidden.md")),
+      "expected hidden file to be included; emitted paths: {emitted_paths:?}"
+    );
+    assert!(
+      emitted_paths
+        .iter()
+        .any(|file_path| file_path.ends_with(".hidden_dir/nested.md")),
+      "expected file in hidden directory to be included; emitted paths: {emitted_paths:?}"
+    );
+  }
+
+  #[tokio::test]
+  async fn test_is_ignored_path_respects_include_hidden() {
+    let temp_dir = TempDir::new().unwrap();
+    let path = temp_dir.path();
+    let hidden_file = path.join(".hidden.md");
+    fs::write(&hidden_file, "# Hidden\n").unwrap();
+
+    assert!(is_ignored_path(path, &hidden_file, &WalkOptions::default()));
+    assert!(!is_ignored_path(
+      path,
+      &hidden_file,
+      &WalkOptions {
+        include_hidden: true,
+        ..WalkOptions::default()
+      },
+    ));
+  }
+
+  #[tokio::test]
+  async fn test_walk_project_include_hidden_still_respects_ignore_rules() {
+    let temp_dir = create_test_project().await;
+    let path = temp_dir.path();
+
+    let mut emitted_paths = BTreeSet::new();
+    let mut stream = walk_project(
+      path,
+      WalkOptions {
+        include_hidden: true,
+        ..WalkOptions::default()
+      },
+    );
+    while let Some(result) = stream.next().await {
+      emitted_paths.insert(result.unwrap().file_path);
+    }
+
+    assert!(
+      !emitted_paths.iter().any(|file_path| file_path.ends_with(".git/config")),
+      "expected .git/config to remain excluded; emitted paths: {emitted_paths:?}"
+    );
   }
 
   #[tokio::test]
@@ -1379,6 +1509,7 @@ python -m pytest tests/
         large_file_threads: 2,
         existing_hashes: std::collections::BTreeMap::new(),
         cancel_token: None,
+        include_hidden: false,
         custom_ignore_filename: None,
         entry_filter: None,
       },
@@ -1421,6 +1552,7 @@ python -m pytest tests/
         large_file_threads: 2,
         existing_hashes: std::collections::BTreeMap::new(),
         cancel_token: None,
+        include_hidden: false,
         custom_ignore_filename: None,
         entry_filter: None,
       },
@@ -1452,6 +1584,7 @@ python -m pytest tests/
           large_file_threads: 2,
           existing_hashes: std::collections::BTreeMap::new(),
           cancel_token: None,
+          include_hidden: false,
           custom_ignore_filename: None,
           entry_filter: None,
         },

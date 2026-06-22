@@ -189,6 +189,8 @@ let mut stream = walk_project(
     WalkOptions {
         max_chunk_size: 1000,
         overlap_percentage: 0.2,
+        // Set to true to traverse hidden files and directories.
+        include_hidden: false,
         ..Default::default()
     },
 );
