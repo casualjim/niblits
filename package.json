@@ -2,11 +2,11 @@
   "name": "niblits",
   "private": true,
   "devDependencies": {
-    "@types/bun": "^1.3.11",
+    "@types/bun": "^1.3.14",
     "@kumos/tree-sitter-parsers": "^0.1.11"
   },
   "peerDependencies": {
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.3"
   },
   "trustedDependencies": [
     "@kumos/tree-sitter-parsers"
