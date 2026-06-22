@@ -151,11 +151,25 @@ fn get_npm_parser_path() -> Result<PathBuf, String> {
   Ok(PathBuf::from(path_str))
 }
 
+fn configure_poppler(target: &str) {
+  if !(target.contains("apple") || target.contains("linux")) {
+    return;
+  }
+
+  pkg_config::Config::new()
+    .cargo_metadata(true)
+    .probe("poppler-glib")
+    .unwrap_or_else(|err| panic!("Failed to locate poppler-glib via pkg-config: {err}"));
+}
+
 fn main() {
   println!("cargo:rerun-if-changed=build.rs");
 
   let out_dir = env::var("OUT_DIR").unwrap();
   let out_path = Path::new(&out_dir);
+  let target = env::var("TARGET").unwrap_or_default();
+
+  configure_poppler(&target);
 
   // Get target-specific parsers
   let parser_lib_path =
